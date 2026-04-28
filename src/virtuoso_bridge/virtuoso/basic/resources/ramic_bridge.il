@@ -260,110 +260,162 @@ procedure(RBStopAll()
 ; conflicts; build GUI and banner menu only the first time.
 unless(boundp('RBMonInstalled)
 progn(
-; Status label showing current bridge state.  RBMRefresh() rewrites this
-; with live ipc / pid / bind info so the GUI tells you what's actually
-; serving — instead of just "Running" with no context.
-RBMState = hiCreateLabel(
-	?name 		'RBMState
-	?labelText 	"RAMIC Bridge: (press Refresh status)"
-	?justification CDS_JUSTIFY_LEFT
-)
+; ----------------------------------------------------------------------
+; Status section -- four stacked labels.  Section header sits on its
+; own row; the four data labels are populated by RBMRefresh().  Old
+; single-RBMState label is kept for back-compat (other code may set it
+; out of habit) but no longer shown in the layout.
+; ----------------------------------------------------------------------
+RBMState = hiCreateLabel(?name 'RBMState ?labelText "" ?justification CDS_JUSTIFY_LEFT)
 
-; Refresh button — only re-reads the SKILL state (RBIpc / RBPort /
-; RBLocal / RBEcho / RBDLog / pid) and repaints this form.  It does not
-; restart the daemon and does not re-read /tmp socket state.
+RBMSecStatus = hiCreateLabel(
+    ?name 'RBMSecStatus
+    ?labelText "STATUS"
+    ?justification CDS_JUSTIFY_LEFT)
+
+RBMStatusIcon = hiCreateLabel(
+    ?name 'RBMStatusIcon
+    ?labelText "(unknown)"
+    ?justification CDS_JUSTIFY_LEFT)
+errset(RBMStatusIcon->foreground = "ForestGreen")
+
+RBMHostLabel = hiCreateLabel(
+    ?name 'RBMHostLabel
+    ?labelText ""
+    ?justification CDS_JUSTIFY_LEFT)
+
+RBMConnLabel = hiCreateLabel(
+    ?name 'RBMConnLabel
+    ?labelText ""
+    ?justification CDS_JUSTIFY_LEFT)
+
+RBMStatsLabel = hiCreateLabel(
+    ?name 'RBMStatsLabel
+    ?labelText ""
+    ?justification CDS_JUSTIFY_LEFT)
+
+; ----------------------------------------------------------------------
+; Control section
+; ----------------------------------------------------------------------
+RBMSecControl = hiCreateLabel(
+    ?name 'RBMSecControl
+    ?labelText "CONTROL"
+    ?justification CDS_JUSTIFY_LEFT)
+
 RBMBtnRefresh = hiCreateButton(
-	?name		'RBMBtnRefresh
-	?buttonText	"Refresh status"
-	?callback	"RBMRefresh()"
-)
+    ?name 'RBMBtnRefresh
+    ?buttonText "Refresh"
+    ?callback "RBMRefresh()")
 
-; Start bridge button
 RBMBtnStart = hiCreateButton(
-	?name		'RBMBtnStart
-	?buttonText	"Start"
-	?callback	"RBStart() RBMRefresh()"
-)
+    ?name 'RBMBtnStart
+    ?buttonText "Start"
+    ?callback "RBStart() RBMRefresh()")
 
-; Stop bridge button
 RBMBtnStop = hiCreateButton(
-	?name		'RBMBtnStop
-	?buttonText	"Stop"
-	?callback	"RBStop() RBMRefresh()"
-)
+    ?name 'RBMBtnStop
+    ?buttonText "Stop"
+    ?callback "RBStop() RBMRefresh()")
 
-; Port number input field
 RBMIntPort = hiCreateIntField(
-	?name		'RBMIntPort
-	?prompt		"Port"
-	?value		RBPort
-	?defValue	RBPort
-	?callback	nil
-)
+    ?name 'RBMIntPort
+    ?prompt "Port"
+    ?value RBPort
+    ?defValue RBPort
+    ?callback nil)
 
-; Local-only connection checkbox
 RBMBolLocal = hiCreateBooleanButton(
-	?name		'RBMBolLocal
-	?buttonText	"Local connect only"
-	?value		RBLocal
-	?defValue	RBLocal
-	?callback	nil
-)
+    ?name 'RBMBolLocal
+    ?buttonText "Local connect only (127.0.0.1)"
+    ?value RBLocal
+    ?defValue RBLocal
+    ?callback nil)
 
-; Echo bridging messages checkbox
+; ----------------------------------------------------------------------
+; Debug section
+; ----------------------------------------------------------------------
+RBMSecDebug = hiCreateLabel(
+    ?name 'RBMSecDebug
+    ?labelText "DEBUG"
+    ?justification CDS_JUSTIFY_LEFT)
+
 RBMBolEcho = hiCreateBooleanButton(
-	?name		'RBMBolEcho
-	?buttonText	"Echo bridging string"
-	?value		RBEcho
-	?defValue	RBEcho
-	?callback	nil
-)
+    ?name 'RBMBolEcho
+    ?buttonText "Echo bridging string"
+    ?value RBEcho
+    ?defValue RBEcho
+    ?callback nil)
 
-; Enable daemon logging checkbox
 RBMBolLog = hiCreateBooleanButton(
-	?name		'RBMBolLog
-	?buttonText	"Daemon log (/tmp/RB.log)"
-	?value		RBDLog
-	?defValue	RBDLog
-	?callback	nil
-)
+    ?name 'RBMBolLog
+    ?buttonText "Daemon log (/tmp/RB.log)"
+    ?value RBDLog
+    ?defValue RBDLog
+    ?callback nil)
 
-; Emergency kill button — UID-scoped (only kills this user's daemons).
-; Earlier "KILL ALL" was misleading: it tried to kill every user's
-; daemon on the host and got "permission denied" on others.
+; ----------------------------------------------------------------------
+; Emergency action -- UID-scoped (only kills *this user's* daemons).
+; ----------------------------------------------------------------------
 RBMBtnStopAll = hiCreateButton(
-	?name		'RBMBtnStopAll
-	?buttonText	"Kill MY daemons (force, UID-scoped)"
-	?callback	"RBStopAll() RBMRefresh()"
+    ?name 'RBMBtnStopAll
+    ?buttonText "Kill MY daemons  (force, UID-scoped)"
+    ?callback "RBStopAll() RBMRefresh()")
+
+; Form geometry: each section is roughly y = [section_y .. section_y+section_h].
+;   Status :  y=10..150  (header + 4 data lines)
+;   Control:  y=160..280 (header + buttons row + port/local row)
+;   Debug  :  y=290..360 (header + 2 checkboxes)
+;   Action :  y=380..420 (Kill button)
+; Width 720 fits "<ip> (<host>) ipc=... pid=... bind=...:..." comfortably.
+;
+; Note: form geometry is captured at first hiCreateAppForm call.  Reloading
+; ramic_bridge.il updates procedure bodies but not the live form -- restart
+; Virtuoso to pick up layout changes.  ?buttonLayout 'Empty drops the
+; default OK/Cancel/Apply/Help row that used to take ~50 px at the bottom.
+hiCreateAppForm(
+    ?name 'RBMonitor
+    ?formTitle "RAMIC Bridge Monitor"
+    ?fields list(
+        ; --- STATUS ---
+        list(RBMSecStatus    20:10  680:20)
+        list(RBMStatusIcon   30:35  680:24)
+        list(RBMHostLabel    30:60  680:20)
+        list(RBMConnLabel    30:85  680:20)
+        list(RBMStatsLabel   30:110 680:20)
+
+        ; --- CONTROL ---
+        list(RBMSecControl   20:155 680:20)
+        list(RBMBtnRefresh   30:180 110:28)
+        list(RBMBtnStart    150:180 110:28)
+        list(RBMBtnStop     270:180 110:28)
+        list(RBMIntPort      30:220 200:28 50)
+        list(RBMBolLocal    260:220 380:28)
+
+        ; --- DEBUG ---
+        list(RBMSecDebug     20:265 680:20)
+        list(RBMBolEcho      30:290 320:28)
+        list(RBMBolLog      370:290 320:28)
+
+        ; --- ACTION ---
+        list(RBMBtnStopAll   30:340 660:32)
+    )
+    ?buttonLayout 'Empty
+    ?help ""
+    ?initialSize  720:400
+    ?minSize      720:400
+    ?maxSize      720:400
+    ?mapCB        "RBMRefresh()"
+    ?callback     "RBMApply()"
 )
 
-; Create the main monitor form.  Note: form geometry is fixed at the
-; first ``hiCreateAppForm`` call in this Virtuoso session — re-loading
-; ramic_bridge.il only redefines the procedures (RBMRefresh / RBStart /
-; RBStopAll), it does NOT resize the existing form.  To pick up new
-; geometry, restart Virtuoso (or unbind RBMonInstalled and reload).
-hiCreateAppForm(
-	?name 'RBMonitor
-	?formTitle "RAMIC Bridge Monitor"
-	?fields list(
-		list(RBMState		20:10	600:30)     ; Status label (wide for ipc/pid/bind line)
-		list(RBMBtnRefresh 	20:50 	130:30)     ; Refresh button
-		list(RBMBtnStart  	170:50 	100:30)     ; Start button
-		list(RBMBtnStop  	290:50 	100:30)     ; Stop button
-		list(RBMIntPort		20:90	170:30 	30) ; Port input
-		list(RBMBolLocal	20:130	250:30)     ; Local-only checkbox
-		list(RBMBolEcho		20:170	250:30)     ; Echo checkbox
-		list(RBMBolLog		20:210	250:30)     ; Log checkbox
-		list(RBMBtnStopAll 	20:250 	370:30)     ; Emergency stop button
-	)
-	?buttonLayout	'OKCancelApply
-	?help			""
-	?initialSize		640:320
-	?minSize			640:320
-	?maxSize			640:320
-	?mapCB			"RBMRefresh()"
-	?callback 		"RBMApply()"
-)
+; Best-effort visual hierarchy.  Cadence Motif labels accept ?foreground
+; via the ShapeSheet-ish slot access, but support is patchy across IC
+; builds; wrap each set in errset so a failure on one variant doesn't
+; abort form construction.  The layout above is fully readable even if
+; every colour set fails.
+errset(RBMSecStatus->foreground  = "DimGray")
+errset(RBMSecControl->foreground = "DimGray")
+errset(RBMSecDebug->foreground   = "DimGray")
 
 ; ============================================================================
 ; Menu Integration
@@ -407,50 +459,83 @@ procedure(RBMRefresh()
     ; - State label gets ipc handle + os pid + bind:port so debugging
     ;   doesn't require a separate `ss -tlnp` round-trip.
     ; - Other widgets just mirror the current SKILL globals.
-	when(boundp('RBMonInstalled)
-	if(boundp('RBIpc) && ipcIsAliveProcess(RBIpc) then
-		prog((bind hostStr)
-			; Re-derive bind from current settings (in case RBLocal toggled
-			; without a daemon restart).  RBLastBind is the bind captured
-			; at start; prefer it because it reflects what the daemon
-			; *actually* listens on.
-			bind = if(RBLastBind && strlen(RBLastBind) > 0
-				RBLastBind
-				sprintf(nil "%s:%d"
-					if(RBLocal "127.0.0.1" "0.0.0.0")
-					RBPort))
-			; Identity column: prefer "IP (hostname)"; fall back to
-			; whatever we have if the banner was older / partial.
-			hostStr = cond(
-				((strlen(RBLastIP) > 0 && strlen(RBLastHost) > 0)
-					sprintf(nil "%s (%s)  " RBLastIP RBLastHost))
-				((strlen(RBLastIP) > 0)
-					sprintf(nil "%s  " RBLastIP))
-				((strlen(RBLastHost) > 0)
-					sprintf(nil "%s  " RBLastHost))
-				(t ""))
-			RBMonitor->RBMState->value = sprintf(nil
-				"RAMIC Bridge: Running   %sipc=%L  pid=%L  bind=%s   |   %d calls (%d err)  up %s"
-				hostStr RBIpc RBLastPid bind
-				RBStatCount RBStatErrors RBFormatUptime(RBStatUptime))
-		)
-	else
-		RBMonitor->RBMState->value = if(RBLastPid
-			sprintf(nil "RAMIC Bridge: Down   (last %s pid=%L port=%d)"
-				cond(
-					((strlen(RBLastIP) > 0 && strlen(RBLastHost) > 0)
-						sprintf(nil "%s (%s)" RBLastIP RBLastHost))
-					((strlen(RBLastIP) > 0) RBLastIP)
-					((strlen(RBLastHost) > 0) RBLastHost)
-					(t "host=?"))
-				RBLastPid RBPort)
-			"RAMIC Bridge: Down")
-	)
-	RBMonitor->RBMIntPort->value = RBPort
-	RBMonitor->RBMBolLocal->value = RBLocal
-	RBMonitor->RBMBolEcho->value = RBEcho
-	RBMonitor->RBMBolLog->value = RBDLog
-	)
+    when(boundp('RBMonInstalled)
+        let((alive bind hostStr statusText statusColor newForm)
+            alive = (boundp('RBIpc) && ipcIsAliveProcess(RBIpc))
+            ; Bind: prefer captured (RBLastBind), fall back to derived
+            bind = if(RBLastBind && strlen(RBLastBind) > 0
+                RBLastBind
+                sprintf(nil "%s:%d"
+                    if(RBLocal "127.0.0.1" "0.0.0.0")
+                    RBPort))
+            ; Identity: "IP (hostname)" if both, else whichever
+            hostStr = cond(
+                ((strlen(RBLastIP) > 0 && strlen(RBLastHost) > 0)
+                    sprintf(nil "%s (%s)" RBLastIP RBLastHost))
+                ((strlen(RBLastIP) > 0)   RBLastIP)
+                ((strlen(RBLastHost) > 0) RBLastHost)
+                (t ""))
+            ; Status icon + traffic-light colour
+            cond(
+                (alive && RBLastPid
+                    statusText = "● Running"
+                    statusColor = "ForestGreen")
+                (alive
+                    ; ipc alive but no banner has come in -- daemon may
+                    ; be a zombie or banner is still in flight
+                    statusText = "◐ Starting / Suspect"
+                    statusColor = "DarkOrange")
+                (t
+                    statusText = "○ Down"
+                    statusColor = "Firebrick"))
+
+            ; --- New-style form (post-restart): RBMStatusIcon exists. ---
+            ; --- Old-style form (legacy): only RBMState exists.       ---
+            newForm = car(errset(RBMonitor->RBMStatusIcon))
+            if(newForm
+                progn(
+                    errset(RBMonitor->RBMStatusIcon->value = statusText)
+                    errset(RBMonitor->RBMStatusIcon->foreground = statusColor)
+                    errset(RBMonitor->RBMHostLabel->value =
+                        if(strlen(hostStr) > 0
+                            sprintf(nil "Host:  %s" hostStr)
+                            "Host:  (banner not yet received)"))
+                    errset(RBMonitor->RBMConnLabel->value =
+                        if(alive
+                            sprintf(nil "ipc=%L     pid=%L     bind=%s"
+                                RBIpc RBLastPid bind)
+                            if(RBLastPid
+                                sprintf(nil "(last)  pid=%L  port=%d"
+                                    RBLastPid RBPort)
+                                "")))
+                    errset(RBMonitor->RBMStatsLabel->value =
+                        if(alive
+                            sprintf(nil "%d calls   %d errors   up %s"
+                                RBStatCount RBStatErrors
+                                RBFormatUptime(RBStatUptime))
+                            ""))
+                )
+                ; Old form path -- pack everything into a single line
+                errset(RBMonitor->RBMState->value =
+                    if(alive
+                        sprintf(nil
+                            "RAMIC Bridge: Running   %s   ipc=%L  pid=%L  bind=%s   |   %d calls (%d err)  up %s"
+                            hostStr RBIpc RBLastPid bind
+                            RBStatCount RBStatErrors
+                            RBFormatUptime(RBStatUptime))
+                        if(RBLastPid
+                            sprintf(nil "RAMIC Bridge: Down   (last %s pid=%L port=%d)"
+                                if(strlen(hostStr) > 0 hostStr "host=?")
+                                RBLastPid RBPort)
+                            "RAMIC Bridge: Down")))
+            )
+
+            errset(RBMonitor->RBMIntPort->value = RBPort)
+            errset(RBMonitor->RBMBolLocal->value = RBLocal)
+            errset(RBMonitor->RBMBolEcho->value = RBEcho)
+            errset(RBMonitor->RBMBolLog->value = RBDLog)
+        )
+    )
 )
 
 procedure(RBMApply()
