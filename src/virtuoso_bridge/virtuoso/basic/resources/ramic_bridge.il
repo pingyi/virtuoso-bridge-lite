@@ -31,11 +31,13 @@ unless(boundp('RBIpc) RBIpc = 'unbound)
 ; Ring buffer for daemon stderr; flushed to CIW only on non-zero exit.
 unless(boundp('RBStderrBuf) RBStderrBuf = "")
 
-; Last known daemon OS pid + bind address.  Captured at RBStart and reused
-; by Finish/Stop/Refresh so post-mortem messages can show port/pid even
-; after the IPC handle has been freed.
+; Last known daemon OS pid + bind address + remote hostname.  Populated
+; by RBIpcErrHandler when it parses the daemon's startup banner; reused
+; by Refresh / Finish / Stop so post-mortem messages keep showing
+; pid/host/port even after the IPC handle has been freed.
 unless(boundp('RBLastPid) RBLastPid = nil)
 unless(boundp('RBLastBind) RBLastBind = "")
+unless(boundp('RBLastHost) RBLastHost = "")
 
 procedure(RBIpcDataHandler(ipcId data)
   ; Handler for successful data received from the Python daemon.
@@ -86,14 +88,16 @@ procedure(RBIpcErrHandler(ipcId data)
                 when(strlen(tok) > 4 && equal(substring(tok 1 4) "pid=")
                     RBLastPid = atoi(substring(tok 5)))
                 when(strlen(tok) > 5 && equal(substring(tok 1 5) "bind=")
-                    RBLastBind = substring(tok 6)))
+                    RBLastBind = substring(tok 6))
+                when(strlen(tok) > 5 && equal(substring(tok 1 5) "host=")
+                    RBLastHost = substring(tok 6)))
             ; First banner of this daemon's lifetime --> announce
-            ; "ready" with the populated pid.  RBStart printed only
-            ; "launching" earlier; this is the authoritative startup
-            ; ack and avoids the pid=nil race window.
+            ; "ready" with the populated pid + host.  RBStart printed
+            ; only "launching" earlier; this is the authoritative
+            ; startup ack and avoids the pid=nil race window.
             when(RBLastPid && !prevPid
-                printf("[RAMIC Bridge ipc=%L pid=%L] ready: bind=%s log=%s\n"
-                    ipcId RBLastPid RBLastBind
+                printf("[RAMIC Bridge ipc=%L host=%s pid=%L] ready: bind=%s log=%s\n"
+                    ipcId RBLastHost RBLastPid RBLastBind
                     if(RBDLog "/tmp/RB.log" "off"))))
     )
 )
@@ -129,7 +133,8 @@ procedure(RBStart()
         printf("[RAMIC Bridge] zombie detected (ipc %L alive, no banner); resetting\n" RBIpc)
         errset(ipcKillProcess(RBIpc))
         RBIpc = 'unbound
-        RBLastBind = "")
+        RBLastBind = ""
+        RBLastHost = "")
 
     if(boundp('RBIpc) && ipcIsAliveProcess(RBIpc) then
         printf("[RAMIC Bridge ipc=%L pid=%L port=%d] already running\n"
@@ -139,6 +144,7 @@ procedure(RBStart()
         ; recognised as the first-of-its-lifetime by RBIpcErrHandler.
         RBLastPid = nil
         RBLastBind = ""
+        RBLastHost = ""
         prog((host logpath)
             ; Determine host binding based on RBLocal setting
             if(RBLocal then
@@ -199,6 +205,7 @@ procedure(RBStopAll()
         RBPort RBPort RBPort RBPort))
     RBIpc = 'unbound
     RBLastPid = nil
+    RBLastHost = ""
     RBStderrBuf = ""
     printf("[RAMIC Bridge] RBStopAll: killed own daemons (UID-scoped, port=%d); verify: ss -tlnp | grep %d\n"
         RBPort RBPort)
@@ -351,7 +358,7 @@ procedure(RBMRefresh()
     ; - Other widgets just mirror the current SKILL globals.
 	when(boundp('RBMonInstalled)
 	if(boundp('RBIpc) && ipcIsAliveProcess(RBIpc) then
-		prog((bind)
+		prog((bind hostStr)
 			; Re-derive bind from current settings (in case RBLocal toggled
 			; without a daemon restart).  RBLastBind is the bind captured
 			; at start; prefer it because it reflects what the daemon
@@ -361,13 +368,17 @@ procedure(RBMRefresh()
 				sprintf(nil "%s:%d"
 					if(RBLocal "127.0.0.1" "0.0.0.0")
 					RBPort))
+			hostStr = if(RBLastHost && strlen(RBLastHost) > 0
+				sprintf(nil "host=%s  " RBLastHost)
+				"")
 			RBMonitor->RBMState->value = sprintf(nil
-				"RAMIC Bridge: Running   ipc=%L  pid=%L  bind=%s"
-				RBIpc RBLastPid bind)
+				"RAMIC Bridge: Running   %sipc=%L  pid=%L  bind=%s"
+				hostStr RBIpc RBLastPid bind)
 		)
 	else
 		RBMonitor->RBMState->value = if(RBLastPid
-			sprintf(nil "RAMIC Bridge: Down   (last pid=%L port=%d)"
+			sprintf(nil "RAMIC Bridge: Down   (last host=%s pid=%L port=%d)"
+				if(RBLastHost && strlen(RBLastHost) > 0 RBLastHost "?")
 				RBLastPid RBPort)
 			"RAMIC Bridge: Down")
 	)

@@ -220,11 +220,18 @@ def start_server():
             raise
         s.listen(1)
         # Banner -- SKILL side parses this from stderr to populate
-        # RBLastPid / RBLastBind for the monitor display.  Format is
-        # frozen: "[RB-banner] pid=<n> bind=<host>:<port>".
+        # RBLastPid / RBLastBind / RBLastHost for the monitor display.
+        # Format is frozen: "[RB-banner] pid=N bind=H:P host=NAME".
+        # ``host`` is the daemon machine's hostname (socket.gethostname),
+        # not the bind interface, so the GUI can show "thu-wei" rather
+        # than "0.0.0.0".
+        try:
+            _hn = socket.gethostname() or "unknown"
+        except Exception:
+            _hn = "unknown"
         sys.stderr.write(
-            "[RB-banner] pid={pid} bind={host}:{port}\n".format(
-                pid=os.getpid(), host=HOST, port=PORT,
+            "[RB-banner] pid={pid} bind={host}:{port} host={hn}\n".format(
+                pid=os.getpid(), host=HOST, port=PORT, hn=_hn,
             )
         )
         sys.stderr.flush()
