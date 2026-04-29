@@ -36,6 +36,31 @@ python import_gds.py /path/to/foo.route_tapeout.gds \
 After completion the script prints ``instances=N shapes=M bbox=...`` for
 the new ``layout`` view as a sanity check.
 
+## ``add_power_labels.py`` — drop VDD/VSS labels onto a routed layout
+
+``strmin`` produces a layout that's pure geometry — no power-net labels.
+This script walks the layout's instance list, finds the first one whose
+master has both the named power and ground pins, reads those pins'
+geometry, transforms through the instance xform (handles R0 / MX / MY /
+R180), and drops a label centered on each rail at the layout's middle x.
+
+```
+python add_power_labels.py --target-lib DIG_OUTPUT --cell LFSR_32BIT
+```
+
+Defaults assume a typical TSMC-style PDK (``--power-pin VDD --ground-pin
+VSS --layer M1 --purpose pin --font roman --height 1.0``).  Override via
+flags for other PDKs:
+
+```
+python add_power_labels.py --target-lib DIG_OUTPUT --cell my_block \
+    --power-pin VPWR --ground-pin VGND \
+    --power-label "VPWR!" --ground-label "VGND!"
+```
+
+User has to know nothing about which std-cell library the design uses —
+the script auto-discovers a reference cell from the instance list.
+
 ## ``import_verilog.py`` — schematic + symbol via ``ihdl``
 
 Wraps Cadence's standalone ``ihdl`` tool — the Cadence-documented
