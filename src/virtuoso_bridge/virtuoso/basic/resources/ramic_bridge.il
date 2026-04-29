@@ -365,6 +365,19 @@ RBMBolLog = hiCreateBooleanButton(
     ?callback nil)
 
 ; ----------------------------------------------------------------------
+; Apply -- commits the form's checkbox / port edits back to SKILL
+; globals (RBLocal / RBPort / RBDLog / RBEcho).  When Local / Port /
+; Daemon-log changed, RBMApply() also restarts the daemon so the new
+; bind setting takes effect.  Lives inline in the form (rather than as
+; the Motif bottom 'Apply button) because this IC's hiCreateAppForm
+; only accepts a fixed enum for ?buttonLayout, and 'Apply isn't in it.
+; ----------------------------------------------------------------------
+RBMBtnApply = hiCreateButton(
+    ?name 'RBMBtnApply
+    ?buttonText "Apply changes  (restarts daemon when port / mode / log toggles)"
+    ?callback "RBMApply() RBMRefresh()")
+
+; ----------------------------------------------------------------------
 ; Emergency action -- UID-scoped (only kills *this user's* daemons).
 ; ----------------------------------------------------------------------
 RBMBtnStopAll = hiCreateButton(
@@ -373,16 +386,18 @@ RBMBtnStopAll = hiCreateButton(
     ?callback "RBStopAll() RBMRefresh()")
 
 ; Form geometry: each section is roughly y = [section_y .. section_y+section_h].
-;   Status :  y=10..150  (header + 4 data lines)
-;   Control:  y=160..280 (header + buttons row + port/local row)
-;   Debug  :  y=290..360 (header + 2 checkboxes)
-;   Action :  y=380..420 (Kill button)
+;   Status :  y=10..150   (header + 4 data lines)
+;   Control:  y=155..255  (header + buttons row + port row)
+;   Options:  y=265..380  (header + 3 checkboxes + Apply button)
+;   Action :  y=435..475  (Kill button)
 ; Width 720 fits "<ip> (<host>) ipc=... pid=... bind=...:..." comfortably.
 ;
 ; Note: form geometry is captured at first hiCreateAppForm call.  Reloading
-; ramic_bridge.il updates procedure bodies but not the live form -- restart
-; Virtuoso to pick up layout changes.  ?buttonLayout 'Empty drops the
-; default OK/Cancel/Apply/Help row that used to take ~50 px at the bottom.
+; ramic_bridge.il updates procedure bodies but not the live form -- close
+; the form and toggle RBMonInstalled=nil before reload to pick up layout
+; changes (or restart Virtuoso).  Apply lives as an inline button rather
+; than ?buttonLayout 'Apply because that symbol isn't in this IC build's
+; valid enum (only 'Empty/'OK/'Close/'OKCancel/'OKCancelApply/...).
 hiCreateAppForm(
     ?name 'RBMonitor
     ?formTitle "RAMIC Bridge Monitor"
@@ -401,26 +416,27 @@ hiCreateAppForm(
         list(RBMBtnStop     270:180 110:28)
         list(RBMIntPort      30:220 200:28 50)
 
-        ; --- OPTIONS (three checkboxes, one per row, left-aligned) ---
+        ; --- OPTIONS (three checkboxes + inline Apply, left-aligned) ---
         list(RBMSecOptions   20:265 680:20)
         list(RBMBolLocal     30:290 660:28)
         list(RBMBolEcho      30:320 660:28)
         list(RBMBolLog       30:350 660:28)
+        list(RBMBtnApply     30:385 660:32)
 
         ; --- ACTION ---
-        list(RBMBtnStopAll   30:395 660:32)
+        list(RBMBtnStopAll   30:435 660:32)
     )
-    ; ``Apply`` shows just the Apply button at the bottom (no OK/Cancel/
-    ; Help noise).  Apply triggers RBMApply() which compares the form's
-    ; checkbox/port values against the live RBLocal/RBPort/RBDLog and
-    ; restarts the daemon if any of them changed.  Earlier 'Empty
-    ; layout looked cleaner but accidentally removed the only way to
-    ; commit option changes -- a regression dressed as polish.
-    ?buttonLayout 'Apply
+    ; ``Empty`` drops the default OK/Cancel/Help row (~50 px).  Apply
+    ; appears as the inline RBMBtnApply button above; pressing it
+    ; calls RBMApply() which diffs form values vs live RBLocal/RBPort/
+    ; RBDLog and restarts the daemon if any toggled.  ``?callback``
+    ; is also wired to RBMApply so future layout changes that re-add
+    ; an OK button keep the same semantics.
+    ?buttonLayout 'Empty
     ?help ""
-    ?initialSize  720:500
-    ?minSize      720:500
-    ?maxSize      720:500
+    ?initialSize  720:520
+    ?minSize      720:520
+    ?maxSize      720:520
     ?mapCB        "RBMRefresh()"
     ?callback     "RBMApply()"
 )
