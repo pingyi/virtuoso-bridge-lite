@@ -293,6 +293,39 @@ bash scripts/fix-symlinks.sh
 The script replaces broken symlinks with NTFS junctions — no admin rights, no
 Developer Mode required.
 
+## Traffic stats: manual cadence — run before any 14-day gap
+
+`stats/{clones,views}.json` is a long-term record of repo traffic, populated
+by `scripts/track_traffic.py`. **GitHub's traffic API only retains 14 days**
+— any window not polled inside that 14-day rolling buffer is **permanently
+lost**.
+
+This used to be auto-CI on a daily schedule, but `GITHUB_TOKEN` in Actions
+cannot access the `/traffic/clones` / `/traffic/views` endpoints (returns
+`403 Resource not accessible by integration` regardless of `permissions:`).
+The workflow at `.github/workflows/track-traffic.yml` is now `workflow_dispatch`
+only — schedule disabled. Run locally instead:
+
+```bash
+GH_TOKEN=$(gh auth token) OWNER=Arcadia-1 REPO=virtuoso-bridge-lite \
+    python scripts/track_traffic.py
+git add stats/ && git commit -m "stats: traffic update $(date -u +%Y-%m-%d)" && git push
+```
+
+**`gh auth token` is the trick** — it returns a real user token (not the
+`GITHUB_TOKEN` Actions issues), which the traffic API does accept. No PAT
+to create.
+
+Cadence: aim for **≤10 days between runs** (gives a 4-day safety margin
+on the 14-day window). If a longer gap happened, the missing days are gone
+forever — don't try to fabricate them.
+
+If for any reason you want the daily auto-run back: create a classic PAT
+with `public_repo` scope (or fine-grained PAT with `Administration: read`),
+save it as repo secret `TRAFFIC_PAT`, change `GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}`
+to `${{ secrets.TRAFFIC_PAT }}` in the yml, and re-enable the `schedule:`
+block. The original PAT-fallback note is preserved in the yml as a comment.
+
 ## Skills & Reference Map
 
 When working on a task, check this table to find relevant skills and references.
