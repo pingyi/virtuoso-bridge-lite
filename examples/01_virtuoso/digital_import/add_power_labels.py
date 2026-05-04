@@ -42,16 +42,25 @@ def _q(s: str) -> str:
 # top cell coords, create labels, save.  Returns a status line — either
 # "OK ..." or "ERROR ..." — for clean Python-side reporting.
 SKILL = """\
-let((cv ref pterm gterm m pf gf pbb gbb pyc gyc xform px py gx gy x_mid plab glab)
+let((cv ref pterm gterm m pf gf pbb gbb pyc gyc xform px py gx gy x_mid plab glab result fallbackLib)
+  fallbackLib = {fallback_lib}
   cv = dbOpenCellViewByType({lib} {cell} "layout" nil "a")
   if(null(cv) then
     sprintf(nil "ERROR: cannot open %s/%s/layout for edit" {lib} {cell})
   else
     ;; --- 1. pick the first instance whose master has both pins ---
+    ;; If the instance's own master has no terminals (strmin without LEF
+    ;; preserves shapes but not pins), fall back to looking in
+    ;; `fallbackLib` (typically the std-cell PDK lib).
     ref = car(setof(i cv~>instances
                       let((m)
                         m = dbOpenCellViewByType(i~>libName i~>cellName
                                                  "layout" nil "r")
+                        when(m && length(m~>terminals) == 0 && fallbackLib != ""
+                          let((m2)
+                            m2 = dbOpenCellViewByType(fallbackLib i~>cellName
+                                                       "layout" nil "r")
+                            when(m2 m = m2)))
                         and(m
                             exists(tm m~>terminals tm~>name == {pwr_pin})
                             exists(tm m~>terminals tm~>name == {gnd_pin})))))
@@ -59,8 +68,12 @@ let((cv ref pterm gterm m pf gf pbb gbb pyc gyc xform px py gx gy x_mid plab gla
       sprintf(nil "ERROR: no instance has both %s and %s pins"
               {pwr_pin} {gnd_pin})
     else
-      ;; --- 2. read master pin bboxes ---
+      ;; --- 2. read master pin bboxes (use fallback lib if needed) ---
       m = dbOpenCellViewByType(ref~>libName ref~>cellName "layout" nil "r")
+      when(m && length(m~>terminals) == 0 && fallbackLib != ""
+        let((m2)
+          m2 = dbOpenCellViewByType(fallbackLib ref~>cellName "layout" nil "r")
+          when(m2 m = m2)))
       pterm = car(setof(tm m~>terminals tm~>name == {pwr_pin}))
       gterm = car(setof(tm m~>terminals tm~>name == {gnd_pin}))
       pf = (car pterm~>pins)~>fig
@@ -74,18 +87,26 @@ let((cv ref pterm gterm m pf gf pbb gbb pyc gyc xform px py gx gy x_mid plab gla
       px = car(dbTransformPoint(list(0.0 pyc) xform))  ; (we only use y)
       py = cadr(dbTransformPoint(list(0.0 pyc) xform))
       gy = cadr(dbTransformPoint(list(0.0 gyc) xform))
-      ;; --- 4. x = top-cell horizontal center ---
-      x_mid = (xCoord(lowerLeft(cv~>bBox)) + xCoord(upperRight(cv~>bBox))) / 2.0
+      ;; --- 4. x = explicit override OR top-cell horizontal center ---
+      ;; The midline default falls inside the SRAM for SRAM-left layouts
+      ;; (the most common case for SRAM-bearing digital), where there's no
+      ;; std-cell M1 rail to bind to.  Pass --label-x <X> to force the
+      ;; label into the std-cell strip instead.
+      x_mid = if({label_x_override} != 0.0
+                 {label_x_override}
+                 (xCoord(lowerLeft(cv~>bBox)) + xCoord(upperRight(cv~>bBox))) / 2.0)
       ;; --- 5. drop labels and save ---
       plab = dbCreateLabel(cv list({layer} {purpose}) list(x_mid py)
                            {pwr_text} "centerCenter" "R0" {font} {height})
       glab = dbCreateLabel(cv list({layer} {purpose}) list(x_mid gy)
                            {gnd_text} "centerCenter" "R0" {font} {height})
       dbSave(cv)
-      sprintf(nil "OK ref=%s/%s@%L %s | %s@%L | %s@%L"
+      result = sprintf(nil "OK ref=%s/%s@%L %s | %s@%L | %s@%L"
               ref~>libName ref~>cellName ref~>xy ref~>orient
               plab~>theLabel plab~>xy
               glab~>theLabel glab~>xy)
+      dbClose(cv)
+      result
     )
   )
 )
@@ -104,6 +125,14 @@ def main() -> int:
     parser.add_argument("--purpose", default="pin",  help="Layer purpose (default: pin)")
     parser.add_argument("--font",    default="roman", help="Label font (default: roman)")
     parser.add_argument("--height",  default=1.0, type=float, help="Label height in micron (default: 1.0)")
+    parser.add_argument("--fallback-lib", default="tcbn28hpcplusbwp12t30p140",
+                        help="Library to fall back to when an instance's own master has no "
+                             "terminals (typical when strmin imported shapes without LEF). "
+                             "Empty string disables fallback. Default: tcbn28hpcplusbwp12t30p140")
+    parser.add_argument("--label-x", default=0.0, type=float,
+                        help="Force label X coordinate (in micron). 0.0 (default) = use layout's "
+                             "horizontal midline, which falls INSIDE the SRAM for SRAM-left "
+                             "layouts. Set to a value inside the std-cell strip.")
     args = parser.parse_args()
 
     client = VirtuosoClient.from_env()
@@ -119,6 +148,8 @@ def main() -> int:
         purpose=_q(args.purpose),
         font=_q(args.font),
         height=args.height,
+        fallback_lib=_q(args.fallback_lib),
+        label_x_override=args.label_x,
     )
     r = client.execute_skill(skill)
     if r.errors:
