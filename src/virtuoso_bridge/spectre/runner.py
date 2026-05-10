@@ -474,7 +474,7 @@ class SpectreSimulator:
         self._output_format = output_format
         self._ssh_key_path = ssh_key_path
         self._ssh_config_path = ssh_config_path
-        self._max_workers = 8
+        self._max_workers = 64
         self._pool: ThreadPoolExecutor | None = None
         self._keep_remote_files = keep_remote_files
         self._ssh_runner: SSHRunner | None = ssh_runner
