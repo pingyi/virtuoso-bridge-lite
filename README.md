@@ -117,6 +117,30 @@ client.execute_skill("1+2")  # VirtuosoResult(status=SUCCESS, output='3')
 
 For detailed setup (jump hosts, multi-profile, local mode), see [`AGENTS.md`](AGENTS.md).
 
+## CLI reference
+
+All commands take `-p PROFILE` / `--env PATH` to pick a non-default config; run `virtuoso-bridge <cmd> --help` for full flags.
+
+| Command | What it does |
+|---|---|
+| **Tunnel / lifecycle** | |
+| `init [user@host] [-J jump]` | Write a starter `.env` (no args = empty template) |
+| `start` | Start SSH tunnel + deploy daemon |
+| `stop` | Stop the SSH tunnel |
+| `restart` | Restart tunnel + daemon |
+| `status` | Tunnel + daemon health + Spectre availability |
+| `license` | Check Spectre license availability |
+| **SKILL execution** | |
+| `load FILE.il` | Run a `.il` file in Virtuoso (uploads it in SSH mode). VS Code task–friendly; outputs `VirtuosoResult` JSON |
+| `eval 'EXPR'` / `eval --stdin` | Run an inline SKILL expression; supports multi-statement via auto-wrapped `progn(...)` |
+| **Interaction / diagnostics** | |
+| `windows` | List all open Virtuoso windows (number + name) |
+| `screenshot [ciw\|current\|N]` | Capture a window to `output/` |
+| `dismiss-dialog` | X11 path: find and dismiss blocking GUI dialogs (saves you when SKILL channel deadlocks on a modal) |
+| `snapshot [-o DIR] [--history H]` | Dump the focused Virtuoso window (maestro/schematic/...) — brief by default, full disk dump with `-o` |
+| **Export** | |
+| `export-visio LIB CELL -o OUT.vsdx` | Render a Virtuoso schematic to Microsoft Visio (Windows + pywin32) |
+
 ## Snapshot a maestro run
 
 Pull the currently-focused maestro session's setup + latest-run artifacts to a local folder:
