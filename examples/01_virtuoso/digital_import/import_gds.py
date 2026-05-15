@@ -207,18 +207,46 @@ def main() -> int:
     # observed 2026-05-14.
     log_path = f"{workdir}/strmIn.log"
 
-    def _scan_strmin_log() -> str | None:
-        """Return a fail-reason string if strmIn.log shows a terminal
-        failure; otherwise None.  Cheap — runs one shell tail per poll."""
-        rr = client.run_shell_command(f"tail -n 200 {log_path}")
-        body = (rr.output or "")
+    def _scan_strmin_log() -> tuple[str | None, bool]:
+        """Return (fail_reason, completed) — fail_reason is a terminal
+        failure string or None; completed is True once XSTRM-234
+        "Translation completed" appears.
+
+        We MUST wait for the completion marker before reading bbox: on a
+        re-import (same cell name already exists in target lib), the old
+        ``layout.oa`` is present from time 0, so ddGetObj/dbOpenCellView
+        succeed immediately and would report the STALE bbox of the
+        previous import.  Observed 2026-05-14: re-imported a 357×78 µm
+        m4s layout over an existing 221×222 m16s layout; verify ran
+        before strmin finished writing and reported 221×222 instead of
+        the new 357×78.
+
+        ``client.run_shell_command`` only returns a SKILL system() status
+        token (``'t'``) in ``.output`` — NOT the captured stdout.  So we
+        read the log via SKILL ``infile``/``gets`` instead, which routes
+        the content through ``execute_skill``'s normal return channel."""
+        read_skill = (
+            f"let((p line body) "
+            f"  p = infile({_q(log_path)}) "
+            f"  body = \"\" "
+            f"  when(p "
+            f"    while(gets(line p) body = strcat(body line)) "
+            f"    close(p)) "
+            f"  body)"
+        )
+        rr = client.execute_skill(read_skill)
+        body = (rr.output or "").strip()
+        # SKILL-returned strings come wrapped in quotes with \" / \\ escapes.
+        if body.startswith('"') and body.endswith('"'):
+            body = body[1:-1]
+        body = body.replace('\\"', '"').replace('\\n', '\n').replace('\\\\', '\\')
         if "XSTRM-273" in body and "Translation failed" in body:
-            # extract the first explicit ERROR line for the user
             for ln in body.splitlines():
                 if "ERROR" in ln and "XSTRM" in ln:
-                    return ln.strip()
-            return "Translation failed (see strmIn.log for details)"
-        return None
+                    return ln.strip(), False
+            return "Translation failed (see strmIn.log for details)", False
+        completed = "XSTRM-234" in body and "Translation completed" in body
+        return None, completed
 
     timeout_s = 600
     poll_interval = 3
@@ -227,18 +255,21 @@ def main() -> int:
     while True:
         # Refresh lib list so Library Manager sees newly-written cells.
         client.execute_skill("ddUpdateLibList()")
-        r = client.execute_skill(verify_skill)
-        out = (r.output or "").strip().strip('"')
-        if out.startswith("instances="):
-            print(f"[OK] {args.target_lib}/{cell}/layout: {out}")
-            return 0
         # Fast-fail on strmin-side failure (don't burn the full timeout).
-        fail = _scan_strmin_log()
+        fail, completed = _scan_strmin_log()
         if fail:
             sys.exit(
                 f"strmin: {fail}\n"
                 f"  Full log: {log_path}"
             )
+        # Only query bbox once strmin has actually finished writing —
+        # otherwise on re-import we'd read the stale previous cellview.
+        if completed:
+            r = client.execute_skill(verify_skill)
+            out = (r.output or "").strip().strip('"')
+            if out.startswith("instances="):
+                print(f"[OK] {args.target_lib}/{cell}/layout: {out}")
+                return 0
         now = time.time()
         if now >= deadline:
             sys.exit(
