@@ -30,10 +30,12 @@ import argparse
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+TMP_DIR = Path(tempfile.gettempdir())
 
 # Lab-fixed defaults — override the two ROOTs via env vars so different
 # users / lab setups don't have to fork this file.  The PDK lib names
@@ -92,8 +94,7 @@ def main() -> int:
     if args.sram_cell:
         ref_libs.append(SRAM_LIB)
     ihdl_ref_libs = ",".join(ref_libs)
-    strmin_ref_file = Path("/tmp/_digital_import_reflibs.txt")
-    strmin_ref_file.parent.mkdir(exist_ok=True)
+    strmin_ref_file = TMP_DIR / "_digital_import_reflibs.txt"
     strmin_ref_file.write_text("\n".join(ref_libs) + "\n")
 
     # Pre-import SRAM if needed.
@@ -105,7 +106,7 @@ def main() -> int:
         else:
             stem = args.sram_cell.lower()
             sram_gds = f"{SRAM_ROOT}/{stem}_180a/GDSII/{stem}_180a.gds"
-            empty_ref = Path("/tmp/_digital_import_empty_ref.txt")
+            empty_ref = TMP_DIR / "_digital_import_empty_ref.txt"
             empty_ref.write_text("")
             run("strmin SRAM macro", [
                 "import_gds.py", sram_gds,
