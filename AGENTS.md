@@ -257,11 +257,17 @@ M0 (VOUT VIN VSS VSS) nch_ulvt_mac l=30n w=1u nf=1
 
 ```bash
 virtuoso-bridge init [user@host] [-J user@jump] [--force]   # write ~/.virtuoso-bridge/.env
-virtuoso-bridge start           # start SSH tunnel + deploy daemon
+virtuoso-bridge start [--bind-venv]  # start SSH tunnel + deploy daemon
 virtuoso-bridge stop            # stop the SSH tunnel
 virtuoso-bridge restart         # force-restart
 virtuoso-bridge status          # check tunnel + Virtuoso daemon + Spectre
 virtuoso-bridge license         # check Spectre license availability
+virtuoso-bridge profile show    # print resolved profile, source, and venv binding path
+virtuoso-bridge profile bind PROFILE --venv  # pin active venv to PROFILE
+virtuoso-bridge profile clear --venv         # remove active venv's profile binding
+virtuoso-bridge load FILE.il    # run a .il file in Virtuoso (uploads in SSH mode)
+virtuoso-bridge eval 'EXPR'     # run inline SKILL expression
+virtuoso-bridge eval --stdin    # multi-line SKILL via stdin (auto-wrapped in progn)
 virtuoso-bridge windows         # list all open Virtuoso windows + focused session
 virtuoso-bridge snapshot        # focused maestro: 4 SKILL probe sections to stdout
 virtuoso-bridge snapshot -o ROOT  # full disk dump (raw + filtered XMLs + per-point run files)

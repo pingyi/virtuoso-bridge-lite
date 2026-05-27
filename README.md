@@ -139,6 +139,9 @@ All commands take `-p PROFILE` / `--env PATH` to pick a non-default config; run 
 | `snapshot [-o DIR] [--history H]` | Dump the focused Virtuoso window (maestro/schematic/...) — brief by default, full disk dump with `-o` |
 | **Export** | |
 | `export-visio LIB CELL -o OUT.vsdx` | Render a Virtuoso schematic to Microsoft Visio (Windows + pywin32) |
+| **SKILL Finder** | |
+| `skill-find <query>` | Search SKILL functions by name (fuzzy/prefix/suffix/exact/regex) |
+| `skill-info <fn>` | Get detailed More Info docs for a SKILL function |
 
 ## Snapshot a maestro run
 
