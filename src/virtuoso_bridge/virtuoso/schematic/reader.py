@@ -30,6 +30,7 @@ import yaml
 from virtuoso_bridge import VirtuosoClient, decode_skill_output
 
 _DEFAULT_FILTERS_PATH = Path(__file__).parent / "cdf_param_filters.yaml"
+_DEFAULT_TIMEOUT_S = 300
 
 
 # =======================================================================
@@ -141,6 +142,7 @@ def read_schematic(
     *,
     include_positions: bool = False,
     param_filters: str | Path | None = _DEFAULT_FILTERS_PATH,
+    timeout: int = _DEFAULT_TIMEOUT_S,
 ) -> dict:
     """Read a schematic in one SKILL call.
 
@@ -153,6 +155,9 @@ def read_schematic(
         param_filters: path to a YAML filter config.  Default uses the
             built-in cdf_param_filters.yaml.  Pass None to return all
             CDF params unfiltered.
+        timeout: Virtuoso SKILL execution timeout in seconds. Large schematics
+            can take longer than the transport default, so the reader defaults
+            to 300 seconds and lets callers override it.
 
     Returns:
         dict with keys: instances, nets, pins, notes.
@@ -171,12 +176,14 @@ def read_schematic(
     # Notes are always included
     skill = skill.replace("{notes_section}", _NOTES_SECTION_EXPR)
 
-    r = client.execute_skill(skill, timeout=60)
+    r = client.execute_skill(skill, timeout=timeout)
     if getattr(r, "errors", None):
         raise RuntimeError(f"read_schematic SKILL error: {r.errors[0]}")
     raw = decode_skill_output(r.output)
     if raw.strip() == "ERROR":
         raise RuntimeError(f"read_schematic could not open schematic {lib or '(current)'}/{cell or '(current)'}")
+    if not raw.strip():
+        raise RuntimeError(f"read_schematic returned empty output for {lib or '(current)'}/{cell or '(current)'}")
 
     # Load filter config
     filter_config = None

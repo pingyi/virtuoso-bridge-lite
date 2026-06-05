@@ -9,10 +9,34 @@ from virtuoso_bridge.virtuoso.schematic.reader import _parse_schematic, read_sch
 
 def test_read_schematic_raises_on_skill_error() -> None:
     class Client:
-        def execute_skill(self, skill: str, timeout: int = 60):
+        def execute_skill(self, skill: str, timeout: int = 300):
             return SimpleNamespace(output="", errors=["*Error* sprintf: argument #3 should be a number"])
 
     with pytest.raises(RuntimeError, match="read_schematic SKILL error"):
+        read_schematic(Client(), "LIB", "CELL", param_filters=None)
+
+
+def test_read_schematic_forwards_timeout() -> None:
+    class Client:
+        timeout: int | None = None
+
+        def execute_skill(self, skill: str, timeout: int = 300):
+            self.timeout = timeout
+            return SimpleNamespace(output="INSTANCES\nNETS\nPINS\nEND\n", errors=[])
+
+    client = Client()
+
+    read_schematic(client, "LIB", "CELL", param_filters=None, timeout=123)
+
+    assert client.timeout == 123
+
+
+def test_read_schematic_raises_on_empty_output() -> None:
+    class Client:
+        def execute_skill(self, skill: str, timeout: int = 300):
+            return SimpleNamespace(output="", errors=[])
+
+    with pytest.raises(RuntimeError, match="returned empty output"):
         read_schematic(Client(), "LIB", "CELL", param_filters=None)
 
 
