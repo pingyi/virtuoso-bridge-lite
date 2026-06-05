@@ -89,8 +89,8 @@ let((cv result)
                 result = strcat(result sprintf(nil "PARAM|%s|%L\n" p~>name p~>value)))))))))
   result = strcat(result "NETS\n")
   foreach(net cv~>nets
-    result = strcat(result sprintf(nil "NET|%s|%d|%s|%s"
-      net~>name net~>numBits
+      result = strcat(result sprintf(nil "NET|%s|%d|%s|%s"
+      net~>name if(net~>numBits net~>numBits 1)
       if(net~>sigType net~>sigType "signal")
       if(net~>isGlobal "t" "nil")))
     foreach(it net~>instTerms
@@ -99,7 +99,9 @@ let((cv result)
   result = strcat(result "PINS\n")
   foreach(term cv~>terminals
     result = strcat(result sprintf(nil "PIN|%s|%s|%d\n"
-      term~>name term~>direction term~>numBits)))
+      term~>name
+      if(term~>direction term~>direction "inputOutput")
+      if(term~>numBits term~>numBits 1))))
   {notes_section}
   result = strcat(result "END\n")
   result)
@@ -107,7 +109,11 @@ let((cv result)
 
 _GEOMETRY_INST_EXPR = r'''
       result = strcat(result sprintf(nil "|%L|%s|%L|%d|%s"
-        inst~>xy inst~>orient inst~>bBox inst~>numInst inst~>viewName))
+        inst~>xy
+        if(inst~>orient inst~>orient "R0")
+        inst~>bBox
+        if(inst~>numInst inst~>numInst 1)
+        if(inst~>viewName inst~>viewName "symbol")))
 '''
 
 _NOTES_SECTION_EXPR = r'''
@@ -166,7 +172,11 @@ def read_schematic(
     skill = skill.replace("{notes_section}", _NOTES_SECTION_EXPR)
 
     r = client.execute_skill(skill, timeout=60)
+    if getattr(r, "errors", None):
+        raise RuntimeError(f"read_schematic SKILL error: {r.errors[0]}")
     raw = decode_skill_output(r.output)
+    if raw.strip() == "ERROR":
+        raise RuntimeError(f"read_schematic could not open schematic {lib or '(current)'}/{cell or '(current)'}")
 
     # Load filter config
     filter_config = None

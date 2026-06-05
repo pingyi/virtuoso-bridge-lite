@@ -595,6 +595,7 @@ When `execute_skill()` times out, possible causes:
 | Cause | Symptom | Fix |
 |-------|---------|-----|
 | **Modal dialog** | GUI popup blocking CIW | `virtuoso-bridge dismiss-dialog` |
+| **Auto dialog finder missed a modal** | GUI popup visible, SKILL channel blocked | `virtuoso-bridge list-windows --json`, then `virtuoso-bridge dismiss-window WINDOW_ID --action enter` |
 | **Long operation** | Simulation or netlist running | Wait, or use `?waitUntilDone nil` |
 | **CIW input prompt** | CIW waiting for typed input | `dismiss-dialog` (sends Enter) |
 | **Bridge disconnected** | All calls fail immediately | `virtuoso-bridge restart` |
@@ -605,11 +606,15 @@ When `execute_skill()` times out, possible causes:
 # Find and dismiss all blocking Virtuoso dialogs
 virtuoso-bridge dismiss-dialog
 
+# Inspect X11 windows and dismiss one explicitly
+virtuoso-bridge list-windows --json
+virtuoso-bridge dismiss-window 0x4203583 --action enter
+
 # From Python
 client.dismiss_dialog()
 ```
 
-Uses `xwininfo` to find virtuoso-owned dialog windows and `XTestFakeKeyEvent` to send Enter. Works even when the SKILL channel is completely stuck.
+Uses `xwininfo` to find virtuoso-owned dialog windows and `XTestFakeKeyEvent` to send the requested key action. Works even when the SKILL channel is completely stuck.
 
 **Prevention:** Always `dbSave(cv)` before `hiCloseWindow(win)`. Never use `?waitUntilDone t` in simulation calls. Add dialog-recovery in simulation loops (see "Run a simulation" section).
 

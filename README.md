@@ -136,6 +136,8 @@ All commands take `-p PROFILE` / `--env PATH` to pick a non-default config; run 
 | `windows` | List all open Virtuoso windows (number + name) |
 | `screenshot [ciw\|current\|N]` | Capture a window to `output/` |
 | `dismiss-dialog` | X11 path: find and dismiss blocking GUI dialogs (saves you when SKILL channel deadlocks on a modal) |
+| `list-windows [--json]` | X11 path: enumerate Virtuoso-related windows, including frame/child IDs and suggested modal actions |
+| `dismiss-window WINDOW_ID [--action enter\|escape\|alt-y\|alt-n]` | X11 path: send an explicit action to one window ID returned by `list-windows` |
 | `snapshot [-o DIR] [--history H]` | Dump the focused Virtuoso window (maestro/schematic/...) — brief by default, full disk dump with `-o` |
 | **Export** | |
 | `export-visio LIB CELL -o OUT.vsdx` | Render a Virtuoso schematic to Microsoft Visio (Windows + pywin32) |

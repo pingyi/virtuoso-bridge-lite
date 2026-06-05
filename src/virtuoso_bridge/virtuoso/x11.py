@@ -113,6 +113,48 @@ def find_dialogs(
     return _parse_output(result.stdout)
 
 
+def list_windows(
+    runner: SSHRunner | None,
+    user: str,
+    display: str | None = None,
+    profile: str | None = None,
+) -> list[dict[str, Any]]:
+    """Enumerate Virtuoso-related X11 windows without dismissing anything."""
+    load_vb_env()
+    script = _ensure_helper(runner, user, profile)
+    py = _detect_remote_python(runner)
+    resolved = _get_display(display)
+    cmd = f"{py} {script} --list-windows --json"
+    if resolved:
+        cmd += f" {resolved}"
+    result = _run(runner, cmd, timeout=15)
+    return _parse_output(result.stdout)
+
+
+def dismiss_window(
+    runner: SSHRunner | None,
+    user: str,
+    window_id: str,
+    *,
+    action: str = "enter",
+    display: str | None = None,
+    profile: str | None = None,
+) -> list[dict[str, Any]]:
+    """Dismiss an explicit X11 window id with a requested key action."""
+    load_vb_env()
+    script = _ensure_helper(runner, user, profile)
+    py = _detect_remote_python(runner)
+    resolved = _get_display(display)
+    cmd = (
+        f"{py} {script} --dismiss-window {shlex.quote(window_id)} "
+        f"--action {shlex.quote(action)}"
+    )
+    if resolved:
+        cmd += f" {resolved}"
+    result = _run(runner, cmd, timeout=15)
+    return _parse_output(result.stdout)
+
+
 def dismiss_dialogs(
     runner: SSHRunner | None,
     user: str,
