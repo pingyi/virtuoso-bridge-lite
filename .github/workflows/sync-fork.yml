@@ -1,0 +1,23 @@
+name: Sync Fork
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # Runs automatically every day at midnight
+  workflow_dispatch: # Allows you to manually trigger the sync at any time
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to push updates back to your fork
+
+    steps:
+      - name: Checkout target fork repository
+        uses: actions/checkout@v4
+
+      - name: Sync upstream changes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Replace 'main' with your default branch name if it is 'master' or 'develop'
+          gh repo sync ${{ github.repository }} -b main
