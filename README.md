@@ -48,6 +48,7 @@ A new infrastructure for **Agentic Analog and Mixed-Signal Design**. LLM Agents 
 | Drive Virtuoso on a remote EDA server | Remote mode | SSH access, running Virtuoso, `load(...)` in CIW |
 | Drive Virtuoso on the same machine | Local mode | Running Virtuoso, `VB_REMOTE_HOST=localhost` |
 | Run Spectre from netlists | Spectre simulator | `spectre` on PATH, or `VB_CADENCE_CSHRC` |
+| Run reproducible IC optimization workflows | Optimizer skill + optional external workflow CLI | Spectre/OCEAN setup, requirement files |
 | Let a coding agent operate Cadence | Agent skills | Link `skills/` into your agent's skill directory |
 
 Virtuoso SKILL execution and Spectre simulation are independent. You can run
