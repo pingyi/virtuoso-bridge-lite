@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import base64
 import binascii
+import hashlib
 import logging
 import os
 import queue
@@ -146,6 +147,20 @@ def _derive_tool(base_cmd: str, old_name: str, new_name: str) -> str:
     return shutil.which(new_name) or new_name
 
 
+def _short_control_path(host: str, user: str | None, jump_host: str | None) -> str:
+    """Build a short literal ControlPath for OpenSSH multiplexing.
+
+    macOS has a 104-byte Unix-domain socket path limit.  Its default temp dir
+    can already consume most of that budget, so keep the socket in a short
+    directory and hash the connection identity into a stable filename.
+    """
+    base_dir = "/tmp" if os.name != "nt" and Path("/tmp").is_dir() else tempfile.gettempdir()
+    local_id = str(os.getuid()) if hasattr(os, "getuid") else os.environ.get("USERNAME", "local")
+    identity = f"{local_id}|{user or 'default'}@{host}|{jump_host or 'direct'}"
+    token = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:16]
+    return str(Path(base_dir) / f"vb_ssh_{token}")
+
+
 class SSHRunner:
     """Generic SSH/rsync/tar runner using OpenSSH CLI tools."""
 
@@ -195,12 +210,7 @@ class SSHRunner:
         _force_cm = os.environ.get("VB_FORCE_CONTROL_MASTER", "").strip().lower() in ("1", "true", "yes")
         self._use_control_master = _force_cm or (not _disable_cm)
 
-        _user_part = user or "default"
-        _tmp = tempfile.gettempdir()
-        # ':' is illegal in Windows filenames; use '_' as the host/jump separator
-        # so the ControlPath is valid on both POSIX and Windows.
-        _jump_tag = (jump_host or "direct").replace(":", "_")
-        self._control_path = f"{_tmp}/vb_ssh_{_user_part}@{host}_{_jump_tag}"
+        self._control_path = _short_control_path(host, user, jump_host)
 
         # Persistent SSH shell = one long-lived ``ssh host sh -s`` subprocess
         # shared by every run_command call.  Turns N cold handshakes into 1.
@@ -554,6 +564,8 @@ class SSHRunner:
         "could not create named pipe",
         "controlpath",  # "ControlPath ... too long", "ControlPath ... not a socket"
         "controlsocket",
+        "unix_listener",
+        "too long for unix domain socket",
         "getsockname failed",
         "not a socket",
     )

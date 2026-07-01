@@ -291,6 +291,7 @@ class SSHClient:
         runner = self._require_runner()
         result = runner.run_command(detect_cmd)
         output = result.stdout.strip()
+        stderr = result.stderr.strip()
         logger.info("Remote Python detection output: %s", output)
 
         python_cmd = None
@@ -311,9 +312,14 @@ class SSHClient:
                     pass
 
         if python_cmd is None or python_major is None:
+            details = f"Detection output: {output!r}"
+            if stderr:
+                details += f". SSH stderr: {stderr!r}"
+            if result.returncode != 0:
+                details += f". SSH return code: {result.returncode}"
             raise RuntimeError(
                 f"No Python interpreter found on {self._remote_host}. "
-                f"Detection output: {output!r}"
+                f"{details}"
             )
         logger.info("Detected remote Python: %s (version %d.%d)", python_cmd, python_major, python_minor)
         return python_cmd, python_major, python_minor
