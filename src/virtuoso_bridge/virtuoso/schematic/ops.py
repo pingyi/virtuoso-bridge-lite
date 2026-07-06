@@ -97,6 +97,56 @@ def schematic_create_wire_label(
         f'"{escape_skill_string(style)}" {height:g} nil)'
     )
 
+def schematic_create_net_expression(
+    net_name: str,
+    net_expression: str,
+    x: float,
+    y: float,
+    *,
+    cv_expr: str = "cv",
+    justification: str = "lowerLeft",
+    rotation: str = "R0",
+    font_style: str = "stick",
+    height: float = 0.0625,
+) -> str:
+    """Build SKILL to attach an inherited-connection expression to a net wire.
+
+    Cadence inherited connections are modeled in two parts: the lower-level
+    schematic gets a net-expression label with ``schCreateNetExpression``, and
+    each upper-level instance can override that expression through a ``netSet``
+    property.
+    """
+    escaped_net = escape_skill_string(net_name)
+    return (
+        "let((rbWire rbLabel) "
+        f"rbWire = car(setof(x {cv_expr}~>shapes "
+        'x~>lpp && car(x~>lpp) == "wire" && '
+        f'x~>net && x~>net~>name == "{escaped_net}")) '
+        'unless(rbWire error("wire for net not found")) '
+        f"rbLabel = schCreateNetExpression({cv_expr} "
+        f'"{escape_skill_string(net_expression)}" rbWire {skill_point(x, y)} '
+        f'"{escape_skill_string(justification)}" '
+        f'"{escape_skill_string(rotation)}" '
+        f'"{escape_skill_string(font_style)}" {height:g}) '
+        "rbLabel)"
+    )
+
+def schematic_set_netset_property(
+    instance_name: str,
+    property_name: str,
+    net_name: str,
+    *,
+    cv_expr: str = "cv",
+) -> str:
+    """Build SKILL to set an instance inherited-connection override."""
+    return (
+        "let((rbInst) "
+        f'rbInst = car(setof(x {cv_expr}~>instances x~>name == "{escape_skill_string(instance_name)}")) '
+        'unless(rbInst error("instance not found")) '
+        f'dbReplaceProp(rbInst "{escape_skill_string(property_name)}" '
+        f'"netSet" "{escape_skill_string(net_name)}"))'
+    )
+
 def _schematic_term_center_expr(instance_name: str, term_name: str, *, cv_expr: str = "cv") -> str:
     return (
         "let((rbInst rbTerm rbPin rbFig rbBBox rbCtr) "

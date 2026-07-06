@@ -7,6 +7,7 @@ from typing import Any, TYPE_CHECKING
 from virtuoso_bridge.virtuoso.schematic.editor import SchematicEditor
 from virtuoso_bridge.virtuoso.schematic.ops import (
     schematic_check,
+    schematic_create_net_expression,
     schematic_create_inst,
     schematic_create_inst_by_master_name,
     schematic_create_pin,
@@ -16,6 +17,7 @@ from virtuoso_bridge.virtuoso.schematic.ops import (
     schematic_label_instance_term_offset,
     schematic_create_wire,
     schematic_create_wire_label,
+    schematic_set_netset_property,
 )
 
 if TYPE_CHECKING:
@@ -41,6 +43,8 @@ __all__ = [
     "schematic_create_inst_by_master_name",
     "schematic_create_wire",
     "schematic_create_wire_label",
+    "schematic_create_net_expression",
+    "schematic_set_netset_property",
     "schematic_label_instance_term",
     "schematic_label_instance_term_offset",
     "schematic_create_pin",
