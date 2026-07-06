@@ -714,7 +714,7 @@ let((result winName ciwNum)
         destination = Path(local_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
 
-        if self._tunnel is not None:
+        if self._tunnel is not None and getattr(self._tunnel, "ssh_runner", None) is not None:
             result = self._tunnel.download_file(source, destination, timeout=timeout)
             elapsed = time.perf_counter() - started
             if result.returncode != 0:
@@ -760,7 +760,7 @@ let((result winName ciwNum)
                 execution_time=time.perf_counter() - started,
             )
 
-        if self._tunnel is not None:
+        if self._tunnel is not None and getattr(self._tunnel, "ssh_runner", None) is not None:
             result = self._tunnel.upload_file(source, destination, timeout=timeout)
             elapsed = time.perf_counter() - started
             if result.returncode != 0:
