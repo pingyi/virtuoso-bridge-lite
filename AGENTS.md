@@ -348,7 +348,8 @@ When working on a task, check this table to find relevant skills and references.
 | **Schematic** | `virtuoso` | `skills/virtuoso/SKILL.md` | `references/schematic-python-api.md`, `references/schematic-skill-api.md`, `references/schematic-recreation.md` |
 | **Maestro / ADE** | `virtuoso` | `skills/virtuoso/SKILL.md` | `references/maestro-python-api.md`, `references/maestro-skill-api.md`, `references/simulation-flow.md` |
 | **Spectre simulation** | `spectre` | `skills/spectre/SKILL.md` | `references/netlist_syntax.md`, `references/parallel.md` |
-| **Netlist** | `virtuoso` | `skills/virtuoso/SKILL.md` | `references/netlist.md`, `references/batch-netlist-si.md` |
+| **Netlist cleanup / curation** | `netlist` | `skills/netlist/SKILL.md` | `references/cleaning.md`, `scripts/check_spectre_netlist.py` |
+| **Netlist export/import** | `virtuoso` | `skills/virtuoso/SKILL.md` | `references/netlist.md`, `references/batch-netlist-si.md` |
 | **Testbench duplication** | `virtuoso` | `skills/virtuoso/SKILL.md` | `references/testbench-duplication.md` |
 | **Parameter optimization** | `optimizer` | `skills/optimizer/SKILL.md` | — |
 
