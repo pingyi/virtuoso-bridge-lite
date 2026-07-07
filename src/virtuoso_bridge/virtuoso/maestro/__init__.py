@@ -57,6 +57,12 @@ from virtuoso_bridge.virtuoso.maestro.writer import (
     # GUI
     open_maestro_gui_with_history,
 )
+from virtuoso_bridge.virtuoso.maestro.waveform_viewer import (
+    close_waveform_viewer,
+    maestro_close_waveform_viewer_skill,
+    maestro_open_waveform_viewer_skill,
+    open_waveform_viewer,
+)
 
 __all__ = [
     # session
@@ -114,4 +120,8 @@ __all__ = [
     "save_setup",
     # write - GUI
     "open_maestro_gui_with_history",
+    "maestro_close_waveform_viewer_skill",
+    "maestro_open_waveform_viewer_skill",
+    "close_waveform_viewer",
+    "open_waveform_viewer",
 ]
