@@ -109,7 +109,8 @@ Adds the full disk dump on top of the same dict.  Layout:
 ├── state_from_skill.txt           ~16 raw SKILL probe outputs in [label] value format
 └── {history_name}/                newest run
     ├── {history_name}.log         OA library log
-    └── {point_subdir}/.../netlist/input.scs + psf/spectre.out + psf/logFile
+    └── {point_subdir}/.../netlist/{input.scs,netlist,exprOutputs.json}
+        + psf/spectre.out + psf/logFile
                                     per-point (all corners), packed via tar
 ```
 

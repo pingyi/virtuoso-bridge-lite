@@ -43,7 +43,7 @@ def find_x11_env(user=None):
         pids = subprocess.check_output(
             ["pgrep", "-u", user or os.environ.get("USER", ""), "-x", "virtuoso"],
             stderr=subprocess.PIPE
-        ).strip().splitlines()
+        ).decode().split()
         for pid in pids:
             pid = pid.strip()
             if not pid:
@@ -389,6 +389,20 @@ def dismiss_window(display, win_id_str, title="", x=0, y=0, w=0, h=0, action=Non
     xlib = ctypes.cdll.LoadLibrary(xlib_path)
     xtst = ctypes.cdll.LoadLibrary(xtst_path)
 
+    # Declare 64-bit-safe signatures. Without argtypes/restype, ctypes defaults
+    # to c_int (32-bit) and truncates Display*/Window pointers on x86_64,
+    # segfaulting inside libX11 (e.g. XRaiseWindow with a truncated display).
+    xlib.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    xlib.XOpenDisplay.restype = ctypes.c_void_p
+    xlib.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    xlib.XFlush.argtypes = [ctypes.c_void_p]
+    xlib.XRaiseWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    xlib.XSetInputFocus.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+    xlib.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    xlib.XKeysymToKeycode.restype = ctypes.c_uint
+    xtst.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+    xtst.XTestFakeKeyEvent.restype = ctypes.c_int
+
     dpy = xlib.XOpenDisplay(None)
     if not dpy:
         return {"error": "cannot open display %s" % display}
@@ -561,6 +575,12 @@ def main():
         xauth = x11_env.get("XAUTHORITY")
         if isinstance(xauth, string_types) and xauth:
             os.environ["XAUTHORITY"] = xauth
+
+    # Export DISPLAY so ctypes XOpenDisplay(None) and xwininfo subprocesses
+    # (which read it from the environment) connect to the right X server.
+    # Without this, auto-detected DISPLAY stays a Python variable and
+    # XOpenDisplay(None) returns NULL -> segfault.
+    os.environ["DISPLAY"] = display
 
     if dismiss_target:
         result = dismiss_window(display, dismiss_target, action=action)

@@ -729,9 +729,17 @@ def cli_license() -> int:
 
 # -- main -------------------------------------------------------------------
 
-def _make_ssh_runner() -> tuple["SSHRunner", str]:
-    """Create an SSHRunner from .env config (for X11 commands)."""
+def _make_ssh_runner() -> tuple["SSHRunner | None", str]:
+    """Create an SSHRunner from .env config (for X11 commands).
+
+    In local mode (VB_REMOTE_HOST is this machine) return ``(None, user)`` so
+    the X11 helper runs locally via subprocess instead of trying to SSH to
+    localhost (which fails without passwordless key auth). Mirrors the local
+    detection used by the daemon/tunnel path.
+    """
     from virtuoso_bridge.transport.ssh import SSHRunner
+    from virtuoso_bridge.transport.tunnel import _is_localhost
+
     profile = _get_cli_profile()
     suffix = f"_{profile}" if profile else ""
     remote_host = os.getenv(f"VB_REMOTE_HOST{suffix}", "").strip()
@@ -740,6 +748,8 @@ def _make_ssh_runner() -> tuple["SSHRunner", str]:
     jump_user = os.getenv(f"VB_JUMP_USER{suffix}", remote_user).strip() or None
     if not remote_host:
         raise SystemExit("Error: VB_REMOTE_HOST not set")
+    if _is_localhost(remote_host):
+        return None, remote_user
     return SSHRunner(host=remote_host, user=remote_user,
                      jump_host=jump_host, jump_user=jump_user), remote_user
 

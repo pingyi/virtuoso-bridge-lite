@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
+from virtuoso_bridge import cli
 from virtuoso_bridge.virtuoso import x11
 
 
@@ -95,6 +97,32 @@ xwininfo: Window id: 0xabc000 "Virtuoso Main"
     assert [d["window_id"] for d in dialogs] == ["0x4203583"]
 
 
+def test_find_x11_env_decodes_pgrep_pid_bytes(monkeypatch) -> None:
+    helper = _load_helper_module()
+    opened_paths = []
+
+    def fake_check_output(cmd, stderr=None):
+        assert cmd == ["pgrep", "-u", "designer", "-x", "virtuoso"]
+        return b"123\n"
+
+    def fake_open(path, mode="r"):
+        opened_paths.append(path)
+        if path == "/proc/123/cmdline":
+            return io.BytesIO(b"virtuoso\x00")
+        if path == "/proc/123/environ":
+            return io.BytesIO(b"DISPLAY=:7\x00XAUTHORITY=/tmp/xauth\x00")
+        raise AssertionError(f"unexpected path: {path!r}")
+
+    monkeypatch.setattr(helper.subprocess, "check_output", fake_check_output)
+    monkeypatch.setattr(helper, "open", fake_open, raising=False)
+
+    env = helper.find_x11_env(user="designer")
+
+    assert env == {"DISPLAY": ":7", "XAUTHORITY": "/tmp/xauth"}
+    assert opened_paths == ["/proc/123/cmdline", "/proc/123/environ"]
+    assert not any("b'123'" in path for path in opened_paths)
+
+
 class _Runner:
     def __init__(self, stdout_by_marker: dict[str, str]) -> None:
         self.commands: list[str] = []
@@ -133,3 +161,42 @@ def test_x11_wrapper_lists_and_dismisses_explicit_window(monkeypatch) -> None:
     assert result == [{"dismissed": "0x4203583", "action": "enter"}]
     assert any("--list-windows --json :".split()[0] in cmd for cmd in runner.commands)
     assert any("--dismiss-window 0x4203583 --action enter" in cmd for cmd in runner.commands)
+
+
+def test_make_ssh_runner_skips_ssh_for_localhost(monkeypatch) -> None:
+    def fail_if_instantiated(*args, **kwargs):
+        raise AssertionError("local X11 commands should not instantiate SSHRunner")
+
+    monkeypatch.setattr(cli, "_CLI_PROFILE", [None])
+    monkeypatch.setenv("VB_REMOTE_HOST", "localhost")
+    monkeypatch.setenv("VB_REMOTE_USER", "designer")
+    monkeypatch.setattr("virtuoso_bridge.transport.ssh.SSHRunner", fail_if_instantiated)
+
+    runner, user = cli._make_ssh_runner()
+
+    assert runner is None
+    assert user == "designer"
+
+
+def test_helper_exports_auto_detected_display(monkeypatch, capsys) -> None:
+    helper = _load_helper_module()
+    calls = []
+
+    def fake_dismiss_window(display, win_id, *args, **kwargs):
+        calls.append((display, win_id, helper.os.environ.get("DISPLAY")))
+        return {"dismissed": win_id}
+
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.setattr(helper, "find_x11_env", lambda: {"DISPLAY": ":7", "XAUTHORITY": ""})
+    monkeypatch.setattr(helper, "dismiss_window", fake_dismiss_window)
+    monkeypatch.setattr(helper.sys, "argv", ["x11_dismiss_dialog.py", "--dismiss-window", "0xabc"])
+
+    try:
+        helper.main()
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    assert calls == [(":7", "0xabc", ":7")]
+    assert helper.os.environ["DISPLAY"] == ":7"
+    out = capsys.readouterr().out
+    assert '"dismissed": "0xabc"' in out

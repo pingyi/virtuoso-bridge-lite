@@ -385,9 +385,9 @@ bridge = VirtuosoClient.<span class="fn">local</span>(port=65432)</code></pre>
 └── &lt;history&gt;/
     ├── &lt;history&gt;.{log,rdb,msg.db}               <span class="cmt"># run-level (rdb/msg.db are SQLite)</span>
     └── &lt;pt&gt;/&lt;tb&gt;/
-        ├── netlist/  → netlist, input.scs, qpInformation.ils, paramInfo.ils
+        ├── netlist/  → netlist, input.scs, qpInformation.ils, exprOutputs.json, paramInfo.ils
         └── psf/      → spectre.out, logFile, dcOp.dc, *.ac, *.tran, *.noise, ...</code></pre>
-      <p>Per-point <code>netlist/</code> keeps only the 4 files that describe the design (main SPICE netlist, testbench top-level, FOM/output-expression definitions, corner label). <code>psf/</code> keeps stdout + logs + non-binary analysis results.</p>
+      <p>Per-point <code>netlist/</code> keeps the 5 files that describe the runnable testbench and outputs (main SPICE netlist, testbench top-level, SKILL and JSON output-expression definitions, corner label). <code>psf/</code> keeps stdout + logs + non-binary analysis results.</p>
       <p>File selection is governed by <a href="https://github.com/Arcadia-1/virtuoso-bridge-lite/blob/main/src/virtuoso_bridge/virtuoso/maestro/snapshot_filter.yaml"><code>virtuoso/maestro/snapshot_filter.yaml</code></a> — every entry carries a per-file tag (<code>[KEEP]</code>, <code>[REDUNDANT]</code>, <code>[SCAFFOLDING]</code>, <code>[METADATA]</code>, <code>[DEBUG-ONLY]</code>, <code>[GUI-CONFIG]</code>, <code>[RARELY]</code>, <code>[NEVER]</code>). Uncomment a line to add a file, comment it to skip. No package reinstall needed; the YAML is reread on every snapshot call.</p>
       <p>Deliberately not pulled, regardless of YAML: <code>*.raw</code> binary waveforms, <code>wavedb/</code>, and PDK info dumps (<code>modelParameter.info</code>, <code>primitives.info.*</code>). Read waveforms through <code>reader.runs.read_results</code> instead of copying the binaries.</p>
     </div>
