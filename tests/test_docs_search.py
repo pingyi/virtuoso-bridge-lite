@@ -3,7 +3,9 @@ from __future__ import annotations
 import gzip
 import json
 import os
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import virtuoso_bridge
@@ -503,4 +505,54 @@ def test_remote_doc_index_command_extracts_records(tmp_path: Path) -> None:
     assert summary["documents"] == 1
     assert summary["topics"] == 1
     assert {record["kind"] for record in records} == {"document", "topic"}
+    assert records[0]["relative_path"] == "skdfref/dbOpenCellViewByType.html"
+
+
+def test_remote_doc_index_command_skips_broken_cadence_python(tmp_path: Path) -> None:
+    install_root = tmp_path / "IC618"
+    doc_root = install_root / "doc"
+    html_path = doc_root / "skdfref" / "dbOpenCellViewByType.html"
+    html_path.parent.mkdir(parents=True)
+    html_path.write_text(
+        "<html><title>dbOpenCellViewByType</title><body>Open a cellview by type.</body></html>",
+        encoding="utf-8",
+    )
+
+    broken_python = install_root / "tools.lnx86" / "python" / "64bit" / "bin" / "python3"
+    broken_python.parent.mkdir(parents=True)
+    broken_python.write_text("#!/bin/sh\necho broken cadence python >&2\nexit 127\n", encoding="utf-8")
+    broken_python.chmod(0o755)
+
+    good_bin = tmp_path / "bin"
+    good_bin.mkdir()
+    good_python = good_bin / "python3"
+    good_python.write_text(
+        f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    good_python.chmod(0o755)
+
+    env = os.environ.copy()
+    env["CDSHOME"] = str(install_root)
+    env["PATH"] = f"{good_bin}{os.pathsep}{env.get('PATH', '')}"
+    result = subprocess.run(
+        ["bash", "-lc", _remote_doc_index_command(str(doc_root))],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "broken cadence python" not in result.stderr
+    summary = json.loads(result.stdout.strip().splitlines()[-1])
+    records_path = Path(summary["path"])
+    try:
+        with gzip.open(records_path, "rt", encoding="utf-8") as fh:
+            records = [json.loads(line) for line in fh if line.strip()]
+    finally:
+        records_path.unlink(missing_ok=True)
+
+    assert summary["documents"] == 1
     assert records[0]["relative_path"] == "skdfref/dbOpenCellViewByType.html"
