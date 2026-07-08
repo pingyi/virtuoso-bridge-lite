@@ -710,14 +710,20 @@ let((result winName ciwNum)
     # -- file transfer (delegates to tunnel) --------------------------------
 
     def download_file(self, remote_path: str | Path, local_path: str | Path,
-                      *, timeout: int | None = None) -> VirtuosoResult:
+                      *, timeout: int | None = None,
+                      recursive: bool = False) -> VirtuosoResult:
         started = time.perf_counter()
         source = _path_to_posix(remote_path)
         destination = Path(local_path)
-        destination.parent.mkdir(parents=True, exist_ok=True)
 
         if self._tunnel is not None and getattr(self._tunnel, "ssh_runner", None) is not None:
-            result = self._tunnel.download_file(source, destination, timeout=timeout)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            result = self._tunnel.download_file(
+                source,
+                destination,
+                timeout=timeout,
+                recursive=recursive,
+            )
             elapsed = time.perf_counter() - started
             if result.returncode != 0:
                 return VirtuosoResult(
@@ -736,7 +742,32 @@ let((result winName ciwNum)
         # Local mode: just copy
         import shutil
         try:
-            shutil.copy2(Path(source), destination)
+            if recursive:
+                source_path = Path(source).resolve()
+                destination_path = destination.resolve(strict=False)
+                if (
+                    source_path == destination_path
+                    or source_path.is_relative_to(destination_path)
+                    or destination_path.is_relative_to(source_path)
+                ):
+                    return VirtuosoResult(
+                        status=ExecutionStatus.ERROR,
+                        errors=[
+                            "Refusing recursive copy with overlapping "
+                            f"source and destination: {source} -> {destination}"
+                        ],
+                        execution_time=time.perf_counter() - started,
+                    )
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if destination.exists():
+                    if destination.is_dir():
+                        shutil.rmtree(destination)
+                    else:
+                        destination.unlink()
+                shutil.copytree(Path(source), destination)
+            else:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(Path(source), destination)
         except OSError as exc:
             return VirtuosoResult(
                 status=ExecutionStatus.ERROR,
@@ -1159,6 +1190,109 @@ let((result winName ciwNum)
                 "raw_html": raw_html,
                 "plain_text": plain_text,
             }
+
+
+    # -- Cadence documentation search --------------------------------------
+
+    def search_docs(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        doc_roots: list[str | Path] | None = None,
+        cache_dir: str | Path | None = None,
+        rebuild_index: bool = False,
+    ) -> dict[str, object]:
+        """Search installed Cadence documentation.
+
+        In SSH mode this discovers documentation roots on the remote Cadence
+        installation, builds a local SQLite index from remote metadata, and
+        reuses that index for later queries. In local mode it indexes
+        configured local doc roots directly.
+        """
+        from pathlib import Path as _Path
+        from virtuoso_bridge.runtime_paths import cache_dir as runtime_cache_dir
+        from virtuoso_bridge.virtuoso.docs_search import (
+            cache_remote_doc_matches,
+            discover_remote_doc_roots,
+            find_remote_doc_matches,
+            remap_results_to_remote,
+            resolve_doc_roots,
+            search_docs,
+            search_remote_docs,
+        )
+        from virtuoso_bridge.virtuoso.skill_finder import SKILLFinder
+
+        safe_limit = max(limit, 0)
+        runner = self.ssh_runner
+
+        if doc_roots:
+            roots = resolve_doc_roots(doc_roots)
+            cache_root = _Path(cache_dir).expanduser() if cache_dir else runtime_cache_dir("docs_search")
+            return {
+                "doc_roots": [str(root) for root in roots],
+                "results": search_docs(
+                    query,
+                    roots,
+                    cache_root=cache_root / self._skill_finder_cache_host(),
+                    limit=safe_limit,
+                    rebuild=rebuild_index,
+                ),
+            }
+
+        if runner is not None:
+            profile = getattr(self._tunnel, "_profile", None) if self._tunnel else None
+            remote_roots = discover_remote_doc_roots(runner, profile=profile)
+            if not remote_roots:
+                return {"doc_roots": [], "results": []}
+
+            if cache_dir:
+                cache_root = _Path(cache_dir).expanduser()
+            else:
+                cache_root = runtime_cache_dir("docs_search")
+
+            try:
+                return {
+                    "doc_roots": remote_roots,
+                    "results": search_remote_docs(
+                        runner,
+                        query,
+                        remote_roots,
+                        cache_root=cache_root / self._skill_finder_cache_host(),
+                        limit=safe_limit,
+                        rebuild=rebuild_index,
+                    ),
+                }
+            except Exception as exc:
+                logger.warning("search_docs: remote index failed, falling back to candidate download: %s", exc)
+                matches = find_remote_doc_matches(runner, query, remote_roots, limit=safe_limit)
+                local_roots, root_map = cache_remote_doc_matches(
+                    runner,
+                    matches,
+                    cache_root / self._skill_finder_cache_host(),
+                )
+                results = search_docs(query, local_roots, limit=safe_limit)
+                return {
+                    "doc_roots": remote_roots,
+                    "results": remap_results_to_remote(results, root_map),
+                }
+
+        roots = resolve_doc_roots()
+        if not roots:
+            finder_root = SKILLFinder().discover(remote_runner=None)
+            if finder_root is not None:
+                roots = [finder_root.parent.parent.resolve()]
+        cache_root = _Path(cache_dir).expanduser() if cache_dir else runtime_cache_dir("docs_search")
+        return {
+            "doc_roots": [str(root) for root in roots],
+            "results": search_docs(
+                query,
+                roots,
+                cache_root=cache_root / self._skill_finder_cache_host(),
+                limit=safe_limit,
+                rebuild=rebuild_index,
+            ),
+        }
 
 
     # -- IL loading ---------------------------------------------------------
