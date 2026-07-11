@@ -5,7 +5,17 @@ from __future__ import annotations
 from typing import Any
 
 from virtuoso_bridge.virtuoso.ops import open_cell_view
-from virtuoso_bridge.virtuoso.skill_output import parse_sexpr
+from virtuoso_bridge.virtuoso.response import response_fields
+from virtuoso_bridge.virtuoso.skill_output import (
+    is_single_complete_skill_list,
+    parse_sexpr,
+)
+
+
+class _SymbolReadFailure(ValueError):
+    def __init__(self, detail: str) -> None:
+        self.detail = detail
+        super().__init__(f"symbol readback failed: {detail}")
 
 
 def symbol_read_ports_skill(
@@ -15,10 +25,14 @@ def symbol_read_ports_skill(
     view: str = "symbol",
     view_type: str = "schematicSymbol",
 ) -> str:
-    """Build SKILL to report symbol terminals, labels, and term order."""
+    """Build SKILL to report terminals, labels, port order, and term order."""
     open_expr = open_cell_view(lib, cell, view=view, view_type=view_type, mode="r")
     return (
-        "let((cv term pin fig label bbox xy result) "
+        "let((cv term pin fig label bbox xy result bodyAttempt bodyResult bodyFailure "
+        "closeResult closeFailures) "
+        'bodyFailure = "symbol read failed" '
+        "bodyResult = unwindProtect(progn("
+        "bodyAttempt = errset(progn("
         f"{open_expr} "
         'unless(cv error("open symbol failed")) '
         "result = nil "
@@ -40,9 +54,20 @@ def symbol_read_ports_skill(
         "when(label~>xy xy = list(xCoord(label~>xy) yCoord(label~>xy))) "
         'result = cons(list("label" if(label~>theLabel label~>theLabel "") '
         'if(label~>labelType label~>labelType "") xy) result))) '
+        'result = cons(list("pinOrder" schGetPinOrder(cv)) result) '
+        'result = cons(list("portOrder" cv~>portOrder) result) '
         'result = cons(list("termOrder" cv~>termOrder) result) '
-        "dbClose(cv) "
-        "reverse(result))"
+        "reverse(result)) nil) "
+        'unless(bodyAttempt bodyFailure = sprintf(nil "%L" errset.errset)) '
+        "bodyAttempt) "
+        "progn(when(cv "
+        "closeResult = errset(dbClose(cv) nil) "
+        "unless(closeResult && car(closeResult) "
+        'closeFailures = cons("symbol close failed" closeFailures)) '
+        "cv = nil))) "
+        "if(bodyResult && !closeFailures "
+        "then car(bodyResult) "
+        'else list("readFailed" if(bodyResult nil bodyFailure) reverse(closeFailures))))'
     )
 
 
@@ -51,12 +76,23 @@ def parse_symbol_ports_output(output: str) -> dict[str, Any]:
     text = (output or "").strip()
     if not text.startswith("("):
         raise ValueError("symbol readback output must be a structured SKILL list")
-    return _parse_symbol_ports_records(text)
+    if not is_single_complete_skill_list(text):
+        raise ValueError("symbol readback output must be a single complete SKILL list")
+    parsed = parse_sexpr(text)
+    failure_detail = _symbol_read_failure_detail(parsed, output=text)
+    if failure_detail is not None:
+        raise _SymbolReadFailure(failure_detail)
+    return _parse_symbol_ports_records(parsed)
 
 
-def _parse_symbol_ports_records(output: str) -> dict[str, Any]:
-    result: dict[str, Any] = {"terms": [], "labels": [], "termOrder": []}
-    parsed = parse_sexpr(output)
+def _parse_symbol_ports_records(parsed: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "terms": [],
+        "labels": [],
+        "pinOrder": [],
+        "portOrder": [],
+        "termOrder": [],
+    }
     if not isinstance(parsed, list):
         return result
 
@@ -81,9 +117,9 @@ def _parse_symbol_ports_records(output: str) -> dict[str, Any]:
                     "xy": _point_value(record[3]),
                 }
             )
-        elif kind == "termOrder" and len(record) >= 2:
+        elif kind in {"pinOrder", "portOrder", "termOrder"} and len(record) >= 2:
             order = record[1] if isinstance(record[1], list) else []
-            result["termOrder"] = [_string_value(item) for item in order]
+            result[kind] = [_string_value(item) for item in order]
     return result
 
 
@@ -96,19 +132,53 @@ def read_symbol_ports(
     view_type: str = "schematicSymbol",
     timeout: int = 30,
 ) -> dict[str, Any]:
-    """Read symbol terminals, labels, and term order."""
+    """Read symbol terminals, labels, port order, and term order."""
     response = client.execute_skill(
         symbol_read_ports_skill(lib, cell, view=view, view_type=view_type),
         timeout=timeout,
     )
-    errors, status, output = _response_fields(response)
+    errors, status, output = response_fields(response)
     _raise_for_symbol_read_error(errors, status, output, lib=lib, cell=cell)
     raw = (output or "").strip()
     if raw.strip() == "ERROR":
         raise RuntimeError(f"read_symbol_ports could not open symbol {lib}/{cell}")
     if not raw.strip():
         raise RuntimeError(f"read_symbol_ports returned empty output for {lib}/{cell}")
-    return parse_symbol_ports_output(raw)
+    try:
+        return parse_symbol_ports_output(raw)
+    except _SymbolReadFailure as exc:
+        raise RuntimeError(
+            f"read_symbol_ports failed for {lib}/{cell}: {exc.detail}"
+        ) from exc
+    except ValueError as exc:
+        raise RuntimeError(
+            f"read_symbol_ports response error for {lib}/{cell}: {exc}"
+        ) from exc
+
+
+def _symbol_read_failure_detail(parsed: Any, *, output: str) -> str | None:
+    if not isinstance(parsed, list) or not parsed or parsed[0] != "readFailed":
+        return None
+    if len(parsed) != 3:
+        raise ValueError(f"malformed symbol read failure output: {output}")
+
+    body_failure = parsed[1]
+    close_failures = parsed[2]
+    if body_failure is not None and not isinstance(body_failure, str):
+        raise ValueError(f"malformed symbol read failure output: {output}")
+    if close_failures is None:
+        close_failures = []
+    if not isinstance(close_failures, list) or any(
+        not isinstance(item, str) for item in close_failures
+    ):
+        raise ValueError(f"malformed symbol read failure output: {output}")
+
+    details: list[str] = []
+    if body_failure is not None:
+        details.append(body_failure)
+    if close_failures:
+        details.append("cleanup failed: " + ", ".join(close_failures))
+    return "; ".join(details) or "unknown failure"
 
 
 def _string_value(value: Any) -> str:
@@ -150,25 +220,6 @@ def _bbox_value(value: Any) -> list[list[float]] | None:
     return [point for point in points if point is not None]
 
 
-def _response_fields(response: Any) -> tuple[Any, Any, str]:
-    if isinstance(response, dict):
-        result = response.get("result") if isinstance(response.get("result"), dict) else {}
-        errors = response.get("errors") or result.get("errors")
-        status = response.get("status") or result.get("status")
-        output = response.get("output")
-        if output is None:
-            output = result.get("output", "")
-        if response.get("ok") is False and not errors:
-            errors = [response.get("error") or result.get("error") or "request failed"]
-        return errors, status, output or ""
-
-    return (
-        getattr(response, "errors", None),
-        getattr(response, "status", None),
-        getattr(response, "output", "") or "",
-    )
-
-
 def _raise_for_symbol_read_error(
     errors: Any,
     status: Any,
@@ -178,7 +229,9 @@ def _raise_for_symbol_read_error(
     cell: str,
 ) -> None:
     if errors:
-        raise RuntimeError(f"read_symbol_ports SKILL error: {errors[0]}")
+        raise RuntimeError(
+            f"read_symbol_ports SKILL error for {lib}/{cell}: {errors[0]}"
+        )
 
     status_value = getattr(status, "value", status)
     if status_value is not None and str(status_value).lower() not in {"success", "ok"}:

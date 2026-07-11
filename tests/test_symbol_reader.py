@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from virtuoso_bridge.models import ExecutionStatus, VirtuosoResult
+from virtuoso_bridge.virtuoso.response import response_fields
 from virtuoso_bridge.virtuoso.symbol import SymbolOps
 from virtuoso_bridge.virtuoso.symbol.reader import (
     parse_symbol_ports_output,
@@ -22,9 +23,15 @@ def test_symbol_read_ports_skill_opens_symbol_and_reports_terms_labels_and_order
     assert "list(xCoord(cadr(fig~>bBox)) yCoord(cadr(fig~>bBox))))" in skill
     assert 'result = cons(list("label"' in skill
     assert "xy = list(xCoord(label~>xy) yCoord(label~>xy))" in skill
+    assert "unwindProtect(" in skill
+    assert 'result = cons(list("pinOrder" schGetPinOrder(cv)) result)' in skill
+    assert 'result = cons(list("portOrder" cv~>portOrder) result)' in skill
     assert 'result = cons(list("termOrder" cv~>termOrder) result)' in skill
-    assert "dbClose(cv)" in skill
-    assert skill.endswith("reverse(result))")
+    assert "cv~>terminals~>name" not in skill
+    assert "bodyAttempt = errset(progn(" in skill
+    assert "closeResult = errset(dbClose(cv) nil)" in skill
+    assert 'closeFailures = cons("symbol close failed" closeFailures)' in skill
+    assert 'list("readFailed" if(bodyResult nil bodyFailure) reverse(closeFailures))' in skill
 
 
 def test_parse_symbol_ports_output_rejects_legacy_tsv() -> None:
@@ -34,11 +41,47 @@ def test_parse_symbol_ports_output_rejects_legacy_tsv() -> None:
         parse_symbol_ports_output(output)
 
 
+def test_parse_symbol_ports_output_rejects_read_failure() -> None:
+    output = '("readFailed" "open symbol failed" ("symbol close failed"))'
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "symbol readback failed: open symbol failed; "
+            "cleanup failed: symbol close failed"
+        ),
+    ):
+        parse_symbol_ports_output(output)
+
+
+def test_parse_symbol_ports_output_rejects_malformed_read_failure() -> None:
+    output = '("readFailed" "open symbol failed")'
+
+    with pytest.raises(ValueError, match="malformed symbol read failure output"):
+        parse_symbol_ports_output(output)
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        '("readFailed" "open symbol failed" nil',
+        '(("term" "A" "input" 1 nil)) ("unexpected")',
+    ],
+)
+def test_parse_symbol_ports_output_rejects_incomplete_or_trailing_data(
+    output: str,
+) -> None:
+    with pytest.raises(ValueError, match="single complete SKILL list"):
+        parse_symbol_ports_output(output)
+
+
 def test_parse_symbol_ports_output_preserves_label_delimiters_from_sexpr() -> None:
     parsed = parse_symbol_ports_output(
         r'(("label" "foo\tbar\nbaz\"\\end" "normalLabel" (0.2 0.0))'
         r' ("term" "A" "input" 1 ((0 0) (0.1 0.1)))'
-        r' ("termOrder" ("A")))'
+        r' ("pinOrder" ("A" "Y"))'
+        r' ("portOrder" ("Y" "A"))'
+        r' ("termOrder" ("A" "Y")))'
     )
 
     assert parsed["labels"] == [
@@ -47,7 +90,9 @@ def test_parse_symbol_ports_output_preserves_label_delimiters_from_sexpr() -> No
     assert parsed["terms"] == [
         {"name": "A", "direction": "input", "numBits": 1, "bbox": [[0.0, 0.0], [0.1, 0.1]]}
     ]
-    assert parsed["termOrder"] == ["A"]
+    assert parsed["pinOrder"] == ["A", "Y"]
+    assert parsed["portOrder"] == ["Y", "A"]
+    assert parsed["termOrder"] == ["A", "Y"]
 
 
 def test_read_symbol_ports_executes_skill() -> None:
@@ -93,7 +138,49 @@ def test_read_symbol_ports_raises_on_skill_error() -> None:
                 errors=["open symbol failed"],
             )
 
-    with pytest.raises(RuntimeError, match="read_symbol_ports SKILL error: open symbol failed"):
+    with pytest.raises(
+        RuntimeError,
+        match="read_symbol_ports SKILL error for demoLib/missing: open symbol failed",
+    ):
+        read_symbol_ports(Client(), "demoLib", "missing")
+
+
+def test_read_symbol_ports_combines_body_and_close_failures() -> None:
+    class Client:
+        def execute_skill(self, skill: str, *, timeout: int):
+            return VirtuosoResult(
+                status=ExecutionStatus.SUCCESS,
+                output=(
+                    '("readFailed" "open symbol failed" '
+                    '("symbol close failed"))'
+                ),
+            )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "read_symbol_ports failed for demoLib/missing: open symbol failed; "
+            "cleanup failed: symbol close failed"
+        ),
+    ):
+        read_symbol_ports(Client(), "demoLib", "missing")
+
+
+def test_read_symbol_ports_rejects_truncated_failure_output() -> None:
+    class Client:
+        def execute_skill(self, skill: str, *, timeout: int):
+            return VirtuosoResult(
+                status=ExecutionStatus.SUCCESS,
+                output='("readFailed" "open symbol failed" nil',
+            )
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "read_symbol_ports response error for demoLib/missing: "
+            "symbol readback output must be a single complete SKILL list"
+        ),
+    ):
         read_symbol_ports(Client(), "demoLib", "missing")
 
 
@@ -111,7 +198,10 @@ def test_read_symbol_ports_raises_on_dict_transport_error() -> None:
         def execute_skill(self, skill: str, *, timeout: int):
             return {"ok": False, "error": "transport failed"}
 
-    with pytest.raises(RuntimeError, match="read_symbol_ports SKILL error: transport failed"):
+    with pytest.raises(
+        RuntimeError,
+        match="read_symbol_ports SKILL error for demoLib/missing: transport failed",
+    ):
         read_symbol_ports(Client(), "demoLib", "missing")
 
 
@@ -162,3 +252,19 @@ def test_read_symbol_ports_accepts_nested_dict_output() -> None:
 
     assert parsed["terms"][0]["name"] == "A"
     assert parsed["termOrder"] == ["A"]
+
+
+def test_response_fields_normalizes_scalar_error() -> None:
+    errors, status, output = response_fields({"errors": "transport failed"})
+
+    assert errors == ["transport failed"]
+    assert status is None
+    assert output == ""
+
+
+def test_response_fields_normalizes_non_string_output() -> None:
+    errors, status, output = response_fields({"output": 17})
+
+    assert errors == []
+    assert status is None
+    assert output == "17"
