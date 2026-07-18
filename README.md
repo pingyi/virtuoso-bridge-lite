@@ -136,7 +136,7 @@ All commands take `-p PROFILE` / `--env PATH` to pick a non-default config; run 
 | `init [user@host] [-J jump]` | Write a starter `.env` (no args = empty template) |
 | `start [--bind-venv]` | Start SSH tunnel + deploy daemon; `--bind-venv` (with `-p X`) also binds the active virtualenv to profile `X` |
 | `stop` | Stop the SSH tunnel |
-| `restart` | Restart tunnel + daemon |
+| `restart` | Restart tunnel and refresh the deployed daemon setup |
 | `status` | Tunnel + daemon health + Spectre availability |
 | `license` | Check Spectre license availability |
 | **Profile binding** | |
@@ -158,6 +158,7 @@ All commands take `-p PROFILE` / `--env PATH` to pick a non-default config; run 
 | **SKILL Finder** | |
 | `skill-find <query>` | Search SKILL functions by name (fuzzy/prefix/suffix/exact/regex) |
 | `skill-info <fn>` | Get detailed More Info docs for a SKILL function |
+| `doc-search <query>` | Search installed Cadence documentation through the active bridge, or pass `--doc-root` for local/offline search |
 
 ## Snapshot a maestro run
 
@@ -187,7 +188,7 @@ Per-point `netlist/` keeps only the 4 files that actually describe the design (m
 ## Exposing skills to your coding agent
 
 The `skills/` directory ships [Claude Code](https://claude.com/claude-code) skills
-(`virtuoso`, `spectre`, `optimizer`). They are **not** symlinked into the repo's
+(`virtuoso`, `spectre`, `netlist`, `optimizer`). They are **not** symlinked into the repo's
 `.claude/skills/` on purpose — repo-tracked symlinks break on Windows and hardcode
 one user's absolute paths. Instead, each user links them into their own
 `~/.claude/skills/` once after cloning:
@@ -197,6 +198,7 @@ one user's absolute paths. Instead, each user links them into their own
 mkdir -p ~/.claude/skills
 ln -s "$(pwd)/skills/virtuoso"  ~/.claude/skills/virtuoso
 ln -s "$(pwd)/skills/spectre"   ~/.claude/skills/spectre
+ln -s "$(pwd)/skills/netlist"   ~/.claude/skills/netlist
 ln -s "$(pwd)/skills/optimizer" ~/.claude/skills/optimizer
 ```
 
@@ -205,6 +207,7 @@ ln -s "$(pwd)/skills/optimizer" ~/.claude/skills/optimizer
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.claude\skills" | Out-Null
 New-Item -ItemType SymbolicLink -Path "$env:USERPROFILE\.claude\skills\virtuoso"  -Target "$PWD\skills\virtuoso"
 New-Item -ItemType SymbolicLink -Path "$env:USERPROFILE\.claude\skills\spectre"   -Target "$PWD\skills\spectre"
+New-Item -ItemType SymbolicLink -Path "$env:USERPROFILE\.claude\skills\netlist"   -Target "$PWD\skills\netlist"
 New-Item -ItemType SymbolicLink -Path "$env:USERPROFILE\.claude\skills\optimizer" -Target "$PWD\skills\optimizer"
 ```
 
@@ -218,8 +221,8 @@ same pattern — point their skills path at `skills/` in this repo.
 </p>
 
 - **VirtuosoClient** — pure TCP SKILL client. Sends SKILL as JSON, gets results. No SSH awareness.
-- **SpectreSimulator** — runs Spectre simulations remotely via SSH shell commands, transfers netlists and results via rsync.
-- **SSHClient** — maintains a persistent ControlMaster connection that multiplexes three channels: TCP port-forwarding (SKILL execution via the daemon), SSH shell commands (Spectre invocation), and rsync file transfer. Optional — bypassed in local mode.
+- **SpectreSimulator** — runs standalone Spectre simulations locally or through SSH, then parses PSF ASCII results into Python data.
+- **SSHClient** — maintains a persistent ControlMaster connection for TCP port-forwarding, remote shell commands, and file transfer. Optional — bypassed in local mode.
 
 Fully decoupled: VirtuosoClient works with any TCP endpoint — SSH tunnel, VPN, direct LAN, or local. Multiple connection profiles are supported, each managing an independent tunnel to a separate design server.
 

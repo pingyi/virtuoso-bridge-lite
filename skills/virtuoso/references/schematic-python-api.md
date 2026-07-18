@@ -50,6 +50,9 @@ Use these with `sch.add(...)`:
 | `schematic_create_pin_at_instance_term(inst, term, pin, *, direction, orientation)` | `schCreatePin` at terminal center | Pin at terminal |
 | `schematic_create_wire_between_instance_terms(from_inst, from_term, to_inst, to_term)` | `schCreateWire` between terminal centers | Wire two terminals |
 | `schematic_label_instance_term(inst, term, net)` | Wire stub + label | Label terminal |
+| `schematic_create_net_stub(net, x, y, *, direction, length)` | wire + `schCreateWireLabel` | Short named electrical connection |
+| `schematic_create_net_expression(net, expression, x, y)` | `schCreateNetExpression` | Attach inherited-connection expression |
+| `schematic_set_netset_property(instance, property, net)` | `dbReplaceProp` | Set an inherited-connection override |
 
 ## SchematicOps (direct execution)
 
@@ -73,6 +76,28 @@ client.schematic.add_wire_between_instance_terms("V0", "PLUS", "R0", "PLUS")
 | `add_wire_between_instance_terms(from_inst, from_term, to_inst, to_term)` | `schCreateWire` between terminals | Wire two terminals |
 | `add_net_label_to_instance_term(inst, term, net_name)` | Wire stub + label | Label terminal |
 | `add_net_label_to_transistor(inst, drain, gate, source, body)` | Multiple wire stubs | Label MOS D/G/S/B |
+
+## Netlist import and export
+
+`client.schematic.export_netlist()` creates a fresh Virtuoso netlist package,
+downloads it to the caller host, and verifies that `input.scs` is present.
+`client.schematic.import_netlist()` runs `spiceIn` and converts the imported
+netlist view into a schematic. Both paths return structured result objects;
+inspect their status and diagnostics instead of assuming a produced directory
+or cellview is valid.
+
+```python
+exported = client.schematic.export_netlist(
+    "demoLib", "tb_amp", "artifacts/tb_amp_netlist", simulator="spectre"
+)
+
+imported = client.schematic.import_netlist(
+    "demoLib", "imported_amp", "artifacts/amp.scs", language="Spectre",
+    overwrite=False,
+)
+```
+
+For format and `spiceIn` limitations, see [netlist.md](netlist.md).
 
 ## Low-level SKILL builders
 

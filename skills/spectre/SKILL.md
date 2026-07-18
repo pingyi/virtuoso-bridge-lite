@@ -5,14 +5,14 @@ description: "Run Cadence Spectre simulations remotely via virtuoso-bridge: uplo
 
 # Spectre Skill
 
-Upload a `.scs` netlist to a remote machine via SSH, run Spectre, download and parse PSF results into Python dicts. Independent of VirtuosoClient — no GUI needed.
+Run a `.scs` netlist locally or on a remote machine through SSH, then parse PSF results into Python dicts. Independent of VirtuosoClient — no GUI needed.
 
 ## Before you start
 
 1. **`virtuoso-bridge` is a Python CLI** — install it in a virtual environment with `uv pip install -e virtuoso-bridge-lite`.
 2. `virtuoso-bridge status` — check connection, Spectre path, license
 3. Check `examples/02_spectre/` — use existing examples as a basis
-4. `.env` must have `VB_CADENCE_CSHRC` set (can live in project root or virtuoso-bridge-lite dir)
+4. `spectre` must be on `PATH`, or set `VB_CADENCE_CSHRC` (project or user `.env`) so the runner can source the Cadence environment. This applies to local and SSH execution.
 
 ## Core pattern
 
@@ -33,18 +33,32 @@ else:
 
 With Verilog-A includes:
 ```python
-result = sim.run_simulation("tb_adc.scs", {"include_files": ["adc.va", "dac.va"]})
+result = sim.run_simulation(
+    "tb_adc.scs",
+    {"include_files": ["adc.va", "dac.va"], "spectre_args": ["+aps"]},
+)
 ```
+
+`include_files` and per-run `spectre_args` have the same meaning in local and
+SSH mode. They stage include files and extend the command; they do not inject
+arbitrary circuit parameters. For local-only execution, use
+`SpectreSimulator.local(...)`, or configure `VB_REMOTE_HOST=localhost` and use
+`from_env()`.
 
 ## Result object
 
 | Attribute | Content |
 |-----------|---------|
 | `result.ok` | Whether simulation succeeded |
-| `result.data` | `{"signal_name": [float, ...]}` parsed waveforms |
-| `result.errors` | Error messages (short, classified) |
-| `result.metadata["timings"]` | Upload, exec, download, parse durations |
+| `result.data` | Parsed waveforms plus scalar OP values; STRUCT OP entries are flattened as `"instance:parameter"` (for example `"M0:gm"`) |
+| `result.errors` | Error messages (short, classified); check these whenever `result.ok` is false |
+| `result.metadata["timings"]` | Execution and parse durations, plus transfer timing in SSH mode |
 | `result.metadata["output_dir"]` | Local path to `.raw` directory |
+
+Treat `result.ok` as the execution contract. A nonzero exit, explicit fatal
+Spectre output, netlist read-in error, or explicit convergence failure returns
+`FAILURE`/`PARTIAL` even if the raw directory contains incomplete files. Do not
+use a non-empty `result.data` as proof that the simulation succeeded.
 
 ## Gotchas (Spectre 21.1 + IC618 lab cluster)
 

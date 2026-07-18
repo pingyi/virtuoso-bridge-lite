@@ -129,8 +129,8 @@
     <table>
       <tr><th>Component</th><th>Description</th></tr>
       <tr><td><code>VirtuosoClient</code></td><td>Pure TCP SKILL client. Sends SKILL as JSON, gets results. No SSH awareness.</td></tr>
-      <tr><td><code>SpectreSimulator</code></td><td>Runs Spectre simulations remotely via SSH shell commands, transfers netlists and results via rsync.</td></tr>
-      <tr><td><code>SSHClient</code></td><td>Persistent ControlMaster connection multiplexing TCP port-forwarding, SSH shell, and rsync. Optional &mdash; bypassed in local mode.</td></tr>
+      <tr><td><code>SpectreSimulator</code></td><td>Runs standalone Spectre simulations locally or through SSH, then parses PSF ASCII results into Python data.</td></tr>
+      <tr><td><code>SSHClient</code></td><td>Persistent ControlMaster connection multiplexing TCP port-forwarding, remote shell commands, and file transfer. Optional &mdash; bypassed in local mode.</td></tr>
     </table>
     <p style="color:var(--muted);font-size:0.9rem;text-align:center;margin-top:12px">Fully decoupled: VirtuosoClient works with any TCP endpoint &mdash; SSH tunnel, VPN, direct LAN, or local.</p>
   </div>
@@ -154,7 +154,7 @@
 <span class="cmd">uv pip install -e .</span>
 
 <span class="cmt"># 2. Generate config (fills host/user/jump + port in one shot)</span>
-<span class="cmd">virtuoso-bridge init</span> user@host <span class="cmd">-J</span> user@jump-host
+<span class="cmd">virtuoso-bridge init user@host -J user@jump-host</span>
 <span class="cmt">#   or `virtuoso-bridge init` for an empty template to edit manually</span>
 
 <span class="cmt"># 3. (only if step 2 left anything blank) edit ~/.virtuoso-bridge/.env</span>
@@ -347,7 +347,7 @@ bridge = VirtuosoClient.<span class="fn">local</span>(port=65432)</code></pre>
         <tr><td><code>virtuoso-bridge init [user@host] [-J user@jump] [--force]</code></td><td>Write <code>~/.virtuoso-bridge/.env</code>; arguments fill host/user/jump, <code>--force</code> overwrites an existing file</td></tr>
         <tr><td><code>virtuoso-bridge start [-p PROFILE] [--bind-venv]</code></td><td>Start SSH tunnel + deploy daemon.  With <code>-p PROFILE --bind-venv</code> also binds the active virtualenv to that profile, so subsequent naked <code>from_env()</code> calls in the same venv resolve to it.</td></tr>
         <tr><td><code>virtuoso-bridge status</code></td><td>Check tunnel, daemon, hostname, Spectre license</td></tr>
-        <tr><td><code>virtuoso-bridge restart</code></td><td>Restart SSH tunnel + daemon</td></tr>
+        <tr><td><code>virtuoso-bridge restart</code></td><td>Restart SSH tunnel and refresh the deployed daemon setup</td></tr>
         <tr><td><code>virtuoso-bridge stop</code></td><td>Stop tunnel</td></tr>
         <tr><td><code>virtuoso-bridge profile show</code> <span style="display:inline-block;padding:1px 6px;margin-left:4px;background:var(--blue);color:#fff;font-size:0.7rem;border-radius:3px;font-weight:600;letter-spacing:0.5px">NEW</span></td><td>Print the resolved profile (and where it came from: explicit / env / runtime <code>--env</code> file / venv binding / user <code>~/.virtuoso-bridge/.env</code> / default), plus the venv binding path.</td></tr>
         <tr><td><code>virtuoso-bridge profile bind PROFILE --venv</code> <span style="display:inline-block;padding:1px 6px;margin-left:4px;background:var(--blue);color:#fff;font-size:0.7rem;border-radius:3px;font-weight:600;letter-spacing:0.5px">NEW</span></td><td>Pin the active virtualenv to <code>PROFILE</code> by writing <code>$VIRTUAL_ENV/.virtuoso-bridge-profile</code>.  Naked <code>VirtuosoClient.from_env()</code> / <code>SpectreSimulator.from_env()</code> calls in that venv then resolve to this profile.  Explicit <code>profile=</code> and CLI <code>-p</code> still take precedence.</td></tr>
@@ -364,6 +364,7 @@ bridge = VirtuosoClient.<span class="fn">local</span>(port=65432)</code></pre>
         <tr><td><code>virtuoso-bridge license</code></td><td>Check Spectre license availability on the remote.</td></tr>
         <tr><td><code>virtuoso-bridge export-visio LIB CELL -o OUT.vsdx</code></td><td>Windows + pywin32 path: render a Virtuoso schematic into Microsoft Visio. Defaults skip the MOS body pin <code>B</code>; <code>--include-body-pins</code> keeps it, <code>--exclude-net</code>/<code>--exclude-pin</code> repeatable for finer filtering.</td></tr>
         <tr><td><code>virtuoso-bridge skill-find &lt;query&gt;</code> <span style="display:inline-block;padding:1px 6px;margin-left:4px;background:var(--blue);color:#fff;font-size:0.7rem;border-radius:3px;font-weight:600;letter-spacing:0.5px">NEW</span></td><td>Search SKILL functions by name (fuzzy / prefix / suffix / exact / regex). Returns matching function names from the Virtuoso SKILL index.</td></tr>
+        <tr><td><code>virtuoso-bridge doc-search &lt;query&gt;</code></td><td>Search installed Cadence HTML/text documentation and topic maps. Use <code>--doc-root</code> for explicit local/offline roots, or omit it to search through the active bridge profile.</td></tr>
         <tr><td><code>virtuoso-bridge skill-info &lt;fn&gt;</code> <span style="display:inline-block;padding:1px 6px;margin-left:4px;background:var(--blue);color:#fff;font-size:0.7rem;border-radius:3px;font-weight:600;letter-spacing:0.5px">NEW</span></td><td>Get detailed More Info documentation for a specific SKILL function — syntax, description, arguments, and return value.</td></tr>
       </table>
     </div>
