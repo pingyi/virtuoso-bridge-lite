@@ -264,7 +264,7 @@ M0 (VOUT VIN VSS VSS) nch_ulvt_mac l=30n w=1u nf=1
 virtuoso-bridge init [user@host] [-J user@jump] [--force]   # write ~/.virtuoso-bridge/.env
 virtuoso-bridge start [--bind-venv]  # start SSH tunnel + deploy daemon
 virtuoso-bridge stop            # stop the SSH tunnel
-virtuoso-bridge restart         # force-restart
+virtuoso-bridge restart         # force-restart and refresh deployed daemon setup
 virtuoso-bridge status          # check tunnel + Virtuoso daemon + Spectre
 virtuoso-bridge license         # check Spectre license availability
 virtuoso-bridge profile show    # print resolved profile, source, and venv binding path
@@ -286,6 +286,7 @@ virtuoso-bridge list-windows --json  # list Virtuoso-related X11 windows
 virtuoso-bridge dismiss-window WINDOW_ID --action enter  # dismiss one explicit X11 window
 virtuoso-bridge skill-find <query>  # search SKILL functions by name (fuzzy/prefix/suffix/exact/regex)
 virtuoso-bridge skill-info <fn>  # get detailed More Info docs for a SKILL function
+virtuoso-bridge doc-search <query>  # search installed Cadence docs (or use --doc-root locally)
 ```
 
 ## Build
@@ -351,7 +352,7 @@ When working on a task, check this table to find relevant skills and references.
 | **Spectre simulation** | `spectre` | `skills/spectre/SKILL.md` | `references/netlist_syntax.md`, `references/parallel.md` |
 | **Netlist cleanup / curation** | `netlist` | `skills/netlist/SKILL.md` | `references/cleaning.md`, `scripts/check_spectre_netlist.py` |
 | **Netlist export/import** | `virtuoso` | `skills/virtuoso/SKILL.md` | `references/netlist.md`, `references/batch-netlist-si.md` |
-| **Testbench duplication** | `virtuoso` | `skills/virtuoso/SKILL.md` | `references/testbench-duplication.md` |
+| **Cadence documentation search** | `virtuoso` | `skills/virtuoso/SKILL.md` | `virtuoso-bridge doc-search <query>` |
 | **Parameter optimization** | `optimizer` | `skills/optimizer/SKILL.md` | — |
 
 All reference paths are relative to the skill directory (e.g. `skills/virtuoso/references/layout-skill-api.md`).

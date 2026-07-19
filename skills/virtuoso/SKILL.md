@@ -230,12 +230,12 @@ Load on demand — each contains detailed API docs and edge-case guidance:
 | File | Contents |
 |------|----------|
 | `references/schematic-skill-api.md` | Schematic SKILL API, terminal-aware helpers, CDF params |
-| `references/schematic-python-api.md` | SchematicEditor, SchematicOps, low-level builders |
+| `references/schematic-python-api.md` | SchematicEditor, SchematicOps, netlist import/export, low-level builders |
 | `references/layout-skill-api.md` | Layout SKILL API, read/query, mosaic, layer control |
 | `references/layout-python-api.md` | LayoutEditor, LayoutOps, shape/via/instance creation |
 | `references/library-python-api.md` | Library CRUD, technology binding, return/error contracts |
 | `references/maestro-skill-api.md` | mae* SKILL functions, OCEAN, corners, known blockers |
-| `references/maestro-python-api.md` | snapshot() (raw SKILL sections) + filter_*_xml + writer functions; read_results (per-point × per-output CSV) + export_waveform (OCEAN) |
+| `references/maestro-python-api.md` | snapshot() (raw SKILL sections) + filter_*_xml + writer functions; read_results (per-point × per-output CSV), export_waveform (OCEAN), and waveform viewer lifecycle |
 | `references/simulation-flow.md` | **Standard simulation flow** — 8-step guide, pitfalls, optimization loops |
 | `references/netlist.md` | CDL/Spectre netlist formats, spiceIn import |
 | `references/troubleshooting.md` | Known gotchas, GUI blocking, CDF quirks, connection issues |
@@ -243,6 +243,7 @@ Load on demand — each contains detailed API docs and edge-case guidance:
 | `references/schematic-recreation.md` | Recreate schematic from existing design (grid layout, diff pair conventions) |
 | `references/batch-netlist-si.md` | Generate netlists without Maestro using si batch translator |
 | `references/skill-finder-python-api.md` | `skill-find` (search SKILL by name) and `skill-info` (More Info docs) |
+| `virtuoso-bridge doc-search <query>` | Search installed Cadence documentation via the bridge or explicit `--doc-root` paths |
 
 ## Examples
 

@@ -10,6 +10,7 @@ from virtuoso_bridge.virtuoso.maestro import (
     snapshot,                                     # one-shot setup snapshot
     filter_sdb_xml, filter_active_state_xml,      # XML filters (pure)
     read_results, export_waveform,                # post-sim consumption
+    open_waveform_viewer, close_waveform_viewer,  # interactive ViVA/AWV view
     open_session, close_session, find_open_session,
     open_gui_session, close_gui_session, run_and_wait,
     save_setup, purge_maestro_cellviews,
@@ -182,6 +183,27 @@ export_waveform(client, session,
 
 Calls `maeOpenResults` → `selectResults` → `ocnPrint` → `maeCloseResults`,
 then scp's the text file back.
+
+### open_waveform_viewer — interactive ViVA/AWV plot
+
+Open an interactive waveform window for explicit signals from a Maestro
+history. The helper deliberately keeps its Maestro results session alive while
+the plot is open; pass the returned window and session handles to
+`close_waveform_viewer()` when finished.
+
+```python
+result = open_waveform_viewer(
+    client, "myLib", "myTB", "Interactive.7", signals=["/OUT", "/IN"],
+    result="tran",
+)
+# result.output encodes the retained Maestro session and waveform window.
+
+close_waveform_viewer(client, window=12, session="fnxSession7")
+```
+
+Use `results_dir=` only when the raw PSF directory is known; in that mode a
+failed `openResults()` is an error rather than a fallback to another active
+result context.
 
 ## Write — Test
 
