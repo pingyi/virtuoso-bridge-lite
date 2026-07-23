@@ -201,7 +201,7 @@ def test_symbol_editor_opens_symbol_view_and_saves() -> None:
 
     assert client.timeout == 7
     assert client.commands is not None
-    assert client.commands[0] == 'cv = dbOpenCellViewByType("demoLib" "nand2" "symbol" "schematicSymbol" "w")'
+    assert client.commands[0] == 'cv = dbOpenCellViewByType("demoLib" "nand2" "symbol" "schematicSymbol" "a")'
     assert client.commands[1] == 'dbCreateRect(cv list("device" "drawing") list(list(-1 -1) list(1 1)))'
     assert client.commands[2] == symbol_check()
     assert "dbSave(rbCv)" in client.commands[3]
@@ -220,7 +220,7 @@ def test_symbol_editor_forwards_custom_view_type() -> None:
         symbol.add(symbol_create_rect("device", "drawing", -1, -1, 1, 1))
 
     assert client.commands is not None
-    assert client.commands[0] == 'cv = dbOpenCellViewByType("demoLib" "nand2" "symbol" "symbol" "w")'
+    assert client.commands[0] == 'cv = dbOpenCellViewByType("demoLib" "nand2" "symbol" "symbol" "a")'
 
 
 def test_symbol_editor_raises_for_failed_virtuoso_result() -> None:

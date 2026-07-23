@@ -70,7 +70,7 @@ Some parameters have different names in schematic CDF vs netlist:
 
 `spiceIn` importing a CDL with `vsin` will create `analogLib/vsource` (not `analogLib/vsin`). To get `vsin` in the schematic, either:
 - Change the instance master manually after import
-- Use `client.schematic.edit()` to add the source with the correct master
+- Use `client.schematic.modify()` to add the source with the correct master
 - Add the source via SKILL: `dbCreateInst(cv dbOpenCellView("analogLib" "vsin" "symbol") ...)`
 
 ## Import: CDL → Virtuoso Schematic

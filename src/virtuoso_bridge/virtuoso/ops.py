@@ -45,7 +45,7 @@ def open_cell_view(
     *,
     view: str = "layout",
     view_type: str | None = None,
-    mode: str = "w",
+    mode: str = "a",
 ) -> str:
     """Build SKILL to open and bind a target cellview to ``cv``."""
     resolved_view_type = view_type or default_view_type_for(view)

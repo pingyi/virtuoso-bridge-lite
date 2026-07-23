@@ -53,7 +53,7 @@ from virtuoso_bridge.virtuoso.schematic.ops import (
 
 def _create_schematic(client: VirtuosoClient, lib: str, cell: str) -> None:
     """RC filter: series R from IN→OUT, shunt C from OUT→GND."""
-    with client.schematic.edit(lib, cell) as sch:
+    with client.schematic.create(lib, cell) as sch:
         # R0 horizontal between IN (left) and OUT (right).
         sch.add(inst("analogLib", "res", "symbol", "R0", 0.5, 0.0, "R90"))
         # C0 vertical between OUT (top) and GND (bottom).

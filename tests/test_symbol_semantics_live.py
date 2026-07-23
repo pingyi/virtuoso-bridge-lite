@@ -44,7 +44,7 @@ def test_manual_symbol_semantics_round_trip_in_virtuoso() -> None:
     client = VirtuosoClient.from_env(timeout=60)
 
     try:
-        with client.symbol.edit(lib, cell, mode="w", timeout=60) as symbol:
+        with client.symbol.create(lib, cell, timeout=60) as symbol:
             symbol.add(symbol_create_rect("device", "drawing", -0.5, -0.5, 0.5, 0.5))
             symbol.add(
                 symbol_create_pin(

@@ -183,7 +183,7 @@ output/20260422_142137__MyLib__myTB/
         └── psf/       → spectre.out, logFile, dcOp.dc, *.ac, *.tran, ...
 ```
 
-Per-point `netlist/` keeps only the 4 files that actually describe the design (main SPICE netlist, testbench top level, FOM definitions, corner label). Psf keeps stdout + logs + non-binary analysis results. The full rule set — including what's commented out and why — lives in [`src/virtuoso_bridge/virtuoso/maestro/snapshot_filter.yaml`](src/virtuoso_bridge/virtuoso/maestro/snapshot_filter.yaml); edit the YAML (uncomment / comment lines) to add or drop files, no code change needed. Binary waveforms (`*.raw`, `wavedb/`) are never pulled — read them through `reader.runs.read_results` instead.
+Per-point `netlist/` keeps only the 4 files that actually describe the design (main SPICE netlist, testbench top level, FOM definitions, corner label). Psf keeps stdout + logs + non-binary analysis results. The full rule set — including what's commented out and why — lives in [`src/virtuoso_bridge/virtuoso/maestro/snapshot_filter.yaml`](src/virtuoso_bridge/virtuoso/maestro/snapshot_filter.yaml); edit the YAML (uncomment / comment lines) to add or drop files, no code change needed. Binary waveforms (`*.raw`, `wavedb/`) are never pulled — read scalar results through `client.maestro.read_results()` instead.
 
 ## Exposing skills to your coding agent
 
@@ -239,7 +239,7 @@ Fully decoupled: VirtuosoClient works with any TCP endpoint — SSH tunnel, VPN,
 | **Remote execution** | SSH tunnel, jump host, auto-reconnect | Not supported |
 | **Calling style** | String-based: `execute_skill("dbOpenCellViewByType(...)")` | Pythonic mapping: `ws.db.open_cell_view_by_type(...)` |
 | **Load .il files** | `client.load_il()` | Not supported |
-| **Layout / schematic API** | `client.layout.edit()` context manager | Raw SKILL only |
+| **Layout / schematic API** | `client.layout.create()` / `modify()` context managers | Raw SKILL only |
 | **Spectre simulation** | Built-in runner + PSF parser | Not supported |
 | **AI agent support** | Skill files, CLI-first, command logging | Not designed for agents |
 | **Python ↔ SKILL types** | String-based | Auto bidirectional mapping |

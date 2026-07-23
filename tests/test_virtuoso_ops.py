@@ -30,6 +30,12 @@ def test_open_cell_view_uses_symbol_view_type_by_default() -> None:
     assert skill == 'cv = dbOpenCellViewByType("demoLib" "nand2" "symbol" "schematicSymbol" "r")'
 
 
+def test_open_cell_view_defaults_to_safe_append_mode() -> None:
+    skill = open_cell_view("demoLib", "nand2", view="schematic")
+
+    assert skill == 'cv = dbOpenCellViewByType("demoLib" "nand2" "schematic" "schematic" "a")'
+
+
 def test_open_window_uses_maestro_view_type_by_default() -> None:
     skill = open_window("demoLib", "nand2", view="maestro")
 

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, Literal, TYPE_CHECKING
 
 from virtuoso_bridge.virtuoso.schematic.editor import SchematicEditor
 from virtuoso_bridge.virtuoso.schematic.ops import (
@@ -36,16 +37,87 @@ if TYPE_CHECKING:
     from virtuoso_bridge import VirtuosoClient
 
 
+class _UseReaderDefault:
+    """Sentinel type that preserves the standalone reader's default filtering."""
+
+
+_USE_READER_DEFAULT = _UseReaderDefault()
+
+
 class SchematicOps:
     """Attached to VirtuosoClient as ``client.schematic``."""
 
     def __init__(self, owner: VirtuosoClient) -> None:
         self._owner = owner
 
-    def edit(self, lib: str, cell: str, view: str = "schematic",
-             mode: str = "w", timeout: int = 60) -> SchematicEditor:
-        """Return a SchematicEditor context manager."""
+    def create(
+        self,
+        lib: str,
+        cell: str,
+        view: str = "schematic",
+        timeout: int = 60,
+    ) -> SchematicEditor:
+        """Create a schematic editor, replacing an existing view if present.
+
+        This is intentionally destructive: Cadence mode ``"w"`` recreates
+        the target cellview. Use :meth:`modify` for an existing schematic.
+        """
+        return SchematicEditor(self._owner, lib, cell, view=view, mode="w", timeout=timeout)
+
+    def modify(
+        self,
+        lib: str,
+        cell: str,
+        view: str = "schematic",
+        timeout: int = 60,
+    ) -> SchematicEditor:
+        """Open a schematic editor in append mode without clearing its view."""
+        return SchematicEditor(self._owner, lib, cell, view=view, mode="a", timeout=timeout)
+
+    def edit(
+        self,
+        lib: str,
+        cell: str,
+        view: str = "schematic",
+        mode: Literal["a", "w"] = "a",
+        timeout: int = 60,
+    ) -> SchematicEditor:
+        """Deprecated compatibility wrapper for :meth:`create` / :meth:`modify`.
+
+        ``edit()`` now defaults to safe append mode. Choose ``create()`` or
+        ``modify()`` explicitly so overwrite intent is visible at the call site.
+        """
+        warnings.warn(
+            "client.schematic.edit() is deprecated; use create() or modify() explicitly.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return SchematicEditor(self._owner, lib, cell, view=view, mode=mode, timeout=timeout)
+
+    def read(
+        self,
+        lib: str | None = None,
+        cell: str | None = None,
+        *,
+        include_positions: bool = False,
+        param_filters: str | Path | None | _UseReaderDefault = _USE_READER_DEFAULT,
+        timeout: int = 300,
+    ) -> dict[str, Any]:
+        """Read schematic topology, pins, nets, parameters, and optional geometry.
+
+        This is the client-bound form of the legacy :func:`read_schematic`
+        function and preserves its default CDF parameter filtering. Passing
+        ``param_filters=None`` returns all CDF parameters.
+        """
+        from virtuoso_bridge.virtuoso.schematic.reader import read_schematic
+
+        kwargs: dict[str, Any] = {
+            "include_positions": include_positions,
+            "timeout": timeout,
+        }
+        if not isinstance(param_filters, _UseReaderDefault):
+            kwargs["param_filters"] = param_filters
+        return read_schematic(self._owner, lib, cell, **kwargs)
 
     def export_netlist(
         self,

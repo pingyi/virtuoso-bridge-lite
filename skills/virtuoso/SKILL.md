@@ -34,7 +34,7 @@ You control a remote Cadence Virtuoso through `virtuoso-bridge`. Python runs loc
 
 | Level | When to use | Example |
 |-------|-------------|---------|
-| **Python API** | Schematic/layout editing — structured, safe | `client.schematic.edit(lib, cell)` |
+| **Python API** | Schematic/layout editing — structured, safe | `client.schematic.create(lib, cell)` |
 | **Inline SKILL** | Maestro, CDF params, anything the API doesn't cover | `client.execute_skill('maeRunSimulation()')` |
 | **SKILL file** | Bulk operations, complex loops | `client.load_il("my_script.il")` |
 
@@ -49,7 +49,7 @@ Always use the highest level that works. Drop to a lower level only when needed.
 | **Schematic** | Create/edit schematics, wire instances, add pins | `client.schematic.*` | `references/schematic-python-api.md`, `references/schematic-skill-api.md` |
 | **Symbol** | Generate, edit, and read symbol views | `client.symbol.*` | `references/symbol-python-api.md` |
 | **Layout** | Create/edit layout, add shapes/vias/instances | `client.layout.*` | `references/layout-python-api.md`, `references/layout-skill-api.md` |
-| **Maestro** | Read/write ADE Assembler config, run simulations | `virtuoso_bridge.virtuoso.maestro` | `references/maestro-python-api.md`, `references/maestro-skill-api.md` |
+| **Maestro** | Read/write ADE Assembler config, run simulations | `client.maestro.*` | `references/maestro-python-api.md`, `references/maestro-skill-api.md` |
 | **Library** | Read/create/rename/delete libraries, bind technology | `client.library.*` | `references/library-python-api.md` |
 | **Netlist (si)** | Batch netlist generation without Maestro | `simInitEnvWithArgs` + `si` CLI | See "Batch Netlist (si)" section below |
 | **SKILL Finder** | Search SKILL function names and get detailed docs | `client.find_skill()`, `client.get_skill_more_info()` | `references/skill-finder-python-api.md` |
@@ -339,7 +339,7 @@ from virtuoso_bridge.virtuoso.schematic import (
     schematic_create_pin as pin,
 )
 
-with client.schematic.edit(LIB, CELL) as sch:
+with client.schematic.create(LIB, CELL) as sch:
     # 1. Place instances — sch.add() queues SKILL commands
     sch.add(inst("tsmcN28", "pch_mac", "symbol", "MP0", 0, 1.5, "R0"))
     sch.add(inst("tsmcN28", "nch_mac", "symbol", "MN0", 0, 0, "R0"))
@@ -410,8 +410,7 @@ client = VirtuosoClient.from_env()
 LIB, CELL = "myLib", "myCell"
 
 # 1. Schematic — default: topology only (no positions/geometry)
-from virtuoso_bridge.virtuoso.schematic.reader import read_schematic
-data = read_schematic(client, LIB, CELL, include_positions=False)
+data = client.schematic.read(LIB, CELL, include_positions=False)
 # data = {
 #     "instances": [{"name", "lib", "cell", "numInst", "view",
 #                    "params": {...}, "terms": {...}}, ...],
@@ -422,10 +421,10 @@ data = read_schematic(client, LIB, CELL, include_positions=False)
 # }
 
 # With positions (only when you need xy/bBox, e.g. for layout-aware editing):
-data_with_pos = read_schematic(client, LIB, CELL, include_positions=True)
+data_with_pos = client.schematic.read(LIB, CELL, include_positions=True)
 
 # No CDF param filtering (return all 200+ PDK params):
-raw = read_schematic(client, LIB, CELL, include_positions=False, param_filters=None)
+raw = client.schematic.read(LIB, CELL, include_positions=False, param_filters=None)
 
 # 2. Maestro — snapshot the focused window
 #
@@ -437,11 +436,10 @@ raw = read_schematic(client, LIB, CELL, include_positions=False, param_filters=N
 #   $ virtuoso-bridge snapshot -o output/
 #
 # Use the Python API only when snapshot is one step in a larger
-# same-connection pipeline (e.g. open_session → snapshot →
-# run_simulation → close_session, or a loop over many cells):
-
-from virtuoso_bridge.virtuoso.maestro import snapshot
-d = snapshot(client)                             # SKILL-only, ~150ms, 1 round-trip
+# same-connection pipeline (e.g. client.maestro.open_session →
+# client.maestro.snapshot → client.maestro.run_simulation →
+# client.maestro.close_session, or a loop over many cells):
+d = client.maestro.snapshot()                             # SKILL-only, ~150ms, 1 round-trip
 # d["raw_sections"] = [(probe_skill_text, raw_output), ...]
 #   Each label IS the actual SKILL string we ran (e.g.
 #   'maeGetAnalysis("test" "ac" ?session "fnxSession18")');
@@ -450,21 +448,21 @@ d = snapshot(client)                             # SKILL-only, ~150ms, 1 round-t
 
 # Full disk dump (raw + YAML-filtered XMLs + 16 SKILL probes + per-point
 # inputs + spectre results + .rdb):
-d = snapshot(client, output_root="output/")      # → d["output_dir"]
+d = client.maestro.snapshot(output_root="output/")      # → d["output_dir"]
 
 # IMPORTANT: snapshot() always uses the CURRENTLY FOCUSED maestro window.
-# Click the desired ADE Assembler first, or use open_session() to bring it up.
+# Click the desired ADE Assembler first, or use client.maestro.open_session() to bring it up.
 
 # Rule of thumb: one-shot inspection → CLI; multi-step pipeline → Python.
 
 # 3. Netlist — generate from maestro session, download via SSH
-session = open_session(client, LIB, CELL)
+session = client.maestro.open_session(LIB, CELL)
 test = decode_skill_output(
     client.execute_skill(f'car(maeGetSetup(?session "{session}"))').output)
 client.execute_skill(
     f'maeCreateNetlistForCorner("{test}" "Nominal" "/tmp/nl_{CELL}" ?session "{session}")')
 client.download_file(f"/tmp/nl_{CELL}/netlist/input.scs", "output/netlist.scs")
-close_session(client, session)
+client.maestro.close_session(session)
 ```
 
 ### Run a simulation
@@ -604,20 +602,18 @@ def read_maestro_results_from_log(client, LIB, CELL, history):
 
 # Full workflow:
 from virtuoso_bridge import VirtuosoClient
-from virtuoso_bridge.virtuoso.maestro import open_gui_session, run_and_wait, close_gui_session
-
 client = VirtuosoClient.from_env()
 LIB, CELL = "PLAYGROUND_AMP", "TB_AMP_5T_D2S_DC_AC"
 
-session = open_gui_session(client, LIB, CELL)  # GUI mode required for results
-history, _ = run_and_wait(client, session=session, timeout=300)
+session = client.maestro.open_gui_session(LIB, CELL)  # GUI mode required for results
+history, _ = client.maestro.run_and_wait(session=session, timeout=300)
 h = history.strip('"')
 
 results = read_maestro_results_from_log(client, LIB, CELL, h)
 print(results)
 # {'bandwidth(...)': '1.64M', 'dB20(...)': '10.93', ...}
 
-close_gui_session(client, session, save=False)
+client.maestro.close_gui_session(session, save=False)
 ```
 
 **Log format in the file:**

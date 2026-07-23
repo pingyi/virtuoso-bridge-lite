@@ -90,7 +90,7 @@ def _build_placeholder_schematic(
     each side.  ``schSchemToPinList`` reads the pin geometry to assign
     sides on the symbol when ``ssgSortPins == "geometric"``.
     """
-    with client.schematic.edit(lib, cell) as sch:
+    with client.schematic.create(lib, cell) as sch:
         for i, name in enumerate(inputs):
             sch.add(schematic_create_pin(name, 0.0, -i * 1.0, direction="input"))
         for i, name in enumerate(outputs):

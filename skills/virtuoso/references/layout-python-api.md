@@ -194,7 +194,7 @@ from virtuoso_bridge.virtuoso.layout import (
     layout_create_via_by_name as via,
 )
 
-with client.layout.edit(lib, cell) as lay:
+with client.layout.create(lib, cell) as lay:
     lay.add(rect("M1", "drawing", 0, 0, 1, 0.5))
     lay.add(path("M2", "drawing", [(0, 0), (1, 0)], 0.1))
     lay.add(inst("tsmcN28", "nch_ulvt_mac", "layout", "M0", 0, 0, "R0"))
@@ -274,9 +274,9 @@ Use these with `lay.add(...)`:
 For large layouts, split into chunks:
 
 ```python
-with client.layout.edit(lib, cell, mode="w") as lay:
+with client.layout.create(lib, cell) as lay:
     lay.add(rect("M1", "drawing", 0, 0, 10, 0.5))
 
-with client.layout.edit(lib, cell, mode="a") as lay:
+with client.layout.modify(lib, cell) as lay:
     lay.add(rect("M2", "drawing", 0, 1, 10, 1.5))
 ```

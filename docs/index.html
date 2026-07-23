@@ -112,7 +112,7 @@
         <tr><td>Remote execution</td><td>SSH tunnel, jump host, auto-reconnect</td><td>Not supported</td></tr>
         <tr><td>Calling style</td><td>String-based: <code>execute_skill("...")</code></td><td>Pythonic: <code>ws.db.open_cell_view_by_type(...)</code></td></tr>
         <tr><td>Load .il files</td><td><code>client.load_il()</code></td><td>Not supported</td></tr>
-        <tr><td>Layout / schematic API</td><td><code>client.layout.edit()</code> context manager</td><td>Raw SKILL only</td></tr>
+        <tr><td>Layout / schematic API</td><td><code>client.layout.create()</code> / <code>modify()</code> context managers</td><td>Raw SKILL only</td></tr>
         <tr><td>Spectre simulation</td><td>Built-in runner + PSF parser</td><td>Not supported</td></tr>
         <tr><td>AI agent support</td><td>Skill files, CLI-first, command logging</td><td>Not designed for agents</td></tr>
         <tr><td>Python &harr; SKILL types</td><td>String-based</td><td>Auto bidirectional mapping</td></tr>
@@ -293,28 +293,23 @@ result = sim.<span class="fn">run_simulation</span>(<span class="str">"tb_inv.sc
 
     <div class="api-group">
       <h3>ADE Maestro (Assembler)</h3>
-      <pre><code><span class="kw">from</span> virtuoso_bridge.virtuoso.maestro <span class="kw">import</span> (
-    snapshot, open_gui_session, close_gui_session,
-    run_and_wait, read_results, export_waveform,
-)
-
 <span class="cmt"># Snapshot the focused maestro window — no session arg needed.
 # Returns dict with raw_sections (list of (skill_probe, raw_output)
 # tuples — no Python parsing of SKILL alists).</span>
-d = <span class="fn">snapshot</span>(client)
+d = client.maestro.<span class="fn">snapshot</span>()
 <span class="cmt"># Or also write the full disk dump (raw + filtered XMLs +
 # state_from_skill.txt + per-point run files via tar). Files
 # pulled are governed by snapshot_filter.yaml — edit to add/drop.</span>
-d = <span class="fn">snapshot</span>(client, output_root=<span class="str">"output/"</span>)
+d = client.maestro.<span class="fn">snapshot</span>(output_root=<span class="str">"output/"</span>)
 <span class="cmt"># Pin a specific history instead of the auto-pick (mtime-first).</span>
-d = <span class="fn">snapshot</span>(client, output_root=<span class="str">"output/"</span>, history=<span class="str">"Interactive.160"</span>)
+d = client.maestro.<span class="fn">snapshot</span>(output_root=<span class="str">"output/"</span>, history=<span class="str">"Interactive.160"</span>)
 
 <span class="cmt"># Open / run / collect — GUI mode is required for run_and_wait</span>
-session = <span class="fn">open_gui_session</span>(client, <span class="str">"myLib"</span>, <span class="str">"myTB"</span>)
-<span class="fn">run_and_wait</span>(client, session)  <span class="cmt"># non-blocking, SKILL callback + ssh polling</span>
-results = <span class="fn">read_results</span>(client, session, lib=<span class="str">"myLib"</span>, cell=<span class="str">"myTB"</span>)
-<span class="fn">export_waveform</span>(client, session, <span class="str">'dB20(mag(v("/OUT")))'</span>, <span class="str">"gain.txt"</span>)
-<span class="fn">close_gui_session</span>(client)</code></pre>
+session = client.maestro.<span class="fn">open_gui_session</span>(<span class="str">"myLib"</span>, <span class="str">"myTB"</span>)
+client.maestro.<span class="fn">run_and_wait</span>(session=session)  <span class="cmt"># non-blocking, SKILL callback + ssh polling</span>
+results = client.maestro.<span class="fn">read_results</span>(session, lib=<span class="str">"myLib"</span>, cell=<span class="str">"myTB"</span>)
+client.maestro.<span class="fn">export_waveform</span>(session, <span class="str">'dB20(mag(v("/OUT")))'</span>, <span class="str">"gain.txt"</span>)
+client.maestro.<span class="fn">close_gui_session</span>(session)</code></pre>
     </div>
 
     <div class="api-group">

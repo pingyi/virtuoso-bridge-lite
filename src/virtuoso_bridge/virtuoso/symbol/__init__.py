@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, TYPE_CHECKING
 
 from virtuoso_bridge.virtuoso.symbol.editor import SymbolEditor
@@ -42,16 +43,59 @@ class SymbolOps:
     def __init__(self, owner: VirtuosoClient) -> None:
         self._owner = owner
 
+    def create(
+        self,
+        lib: str,
+        cell: str,
+        view: str = "symbol",
+        view_type: str = "schematicSymbol",
+        timeout: int = 60,
+    ) -> SymbolEditor:
+        """Create a symbol editor, replacing an existing view if present."""
+        return SymbolEditor(
+            self._owner,
+            lib,
+            cell,
+            view=view,
+            view_type=view_type,
+            mode="w",
+            timeout=timeout,
+        )
+
+    def modify(
+        self,
+        lib: str,
+        cell: str,
+        view: str = "symbol",
+        view_type: str = "schematicSymbol",
+        timeout: int = 60,
+    ) -> SymbolEditor:
+        """Open a symbol editor in append mode without clearing its view."""
+        return SymbolEditor(
+            self._owner,
+            lib,
+            cell,
+            view=view,
+            view_type=view_type,
+            mode="a",
+            timeout=timeout,
+        )
+
     def edit(
         self,
         lib: str,
         cell: str,
         view: str = "symbol",
         view_type: str = "schematicSymbol",
-        mode: str = "w",
+        mode: str = "a",
         timeout: int = 60,
     ) -> SymbolEditor:
-        """Return a SymbolEditor context manager."""
+        """Deprecated compatibility wrapper for :meth:`create` / :meth:`modify`."""
+        warnings.warn(
+            "client.symbol.edit() is deprecated; use create() or modify() explicitly.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return SymbolEditor(
             self._owner,
             lib,
