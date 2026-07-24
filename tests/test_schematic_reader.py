@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from virtuoso_bridge.virtuoso.schematic.reader import _parse_schematic, read_schematic
+from virtuoso_bridge.virtuoso.schematic import SchematicOps
 
 
 def test_read_schematic_raises_on_skill_error() -> None:
@@ -29,6 +30,33 @@ def test_read_schematic_forwards_timeout() -> None:
     read_schematic(client, "LIB", "CELL", param_filters=None, timeout=123)
 
     assert client.timeout == 123
+
+
+def test_client_bound_read_delegates_to_unified_reader(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    owner = object()
+
+    def fake_read(client: object, lib: str, cell: str, **kwargs: object) -> dict[str, object]:
+        captured["client"] = client
+        captured["lib"] = lib
+        captured["cell"] = cell
+        captured["kwargs"] = kwargs
+        return {"instances": []}
+
+    monkeypatch.setattr(
+        "virtuoso_bridge.virtuoso.schematic.reader.read_schematic",
+        fake_read,
+    )
+
+    result = SchematicOps(owner).read("LIB", "CELL", include_positions=True, timeout=123)
+
+    assert result == {"instances": []}
+    assert captured == {
+        "client": owner,
+        "lib": "LIB",
+        "cell": "CELL",
+        "kwargs": {"include_positions": True, "timeout": 123},
+    }
 
 
 def test_read_schematic_raises_on_empty_output() -> None:

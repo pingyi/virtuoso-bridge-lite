@@ -237,7 +237,9 @@ If `spectre` is already on PATH in the remote user's default shell (e.g., via `~
 
 - SKILL execution goes through the bridge (`VirtuosoClient` in Python, or
   `virtuoso-bridge eval/load` from the CLI). Never SSH and run SKILL manually.
-- Layout/schematic editing: `client.layout.edit()` / `client.schematic.edit()` context managers.
+- Layout/schematic editing: explicit `client.layout.create()` / `modify()` and
+  `client.schematic.create()` / `modify()` context managers. The legacy
+  `edit()` methods are deprecated and default to safe append mode.
 - Spectre simulation: `SpectreSimulator.from_env()`. See "How Spectre is located" above.
 - `core/` is the minimal reference implementation (3 source files, ~285 lines). Use the installed package for real work.
 - `tools/` contains standalone utilities (e.g. `skill_exec.py` — zero-dependency SKILL execution tool).

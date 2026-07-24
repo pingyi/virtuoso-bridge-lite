@@ -3,7 +3,7 @@
 Usage:
     from virtuoso_bridge.virtuoso.schematic.ops import *
 
-    with client.schematic.edit(LIB, CELL) as sch:
+    with client.schematic.create(LIB, CELL) as sch:
         sch.add(schematic_create_inst_by_master_name("tsmcN28", "nch_ulvt_mac", "symbol", "M0", 0, 0, "R0"))
         sch.add(schematic_label_instance_term("M0", "D", "OUT"))
         sch.add(schematic_create_pin("IN", -1.0, 0.75, "R0", direction="input"))
@@ -37,7 +37,7 @@ class SchematicEditor:
         lib: str,
         cell: str,
         view: str = "schematic",
-        mode: str = "w",
+        mode: str = "a",
         timeout: int = 60,
     ) -> None:
         self.client = client

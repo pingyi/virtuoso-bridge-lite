@@ -22,7 +22,7 @@ class SymbolEditor:
         cell: str,
         view: str = "symbol",
         view_type: str = "schematicSymbol",
-        mode: str = "w",
+        mode: str = "a",
         timeout: int = 60,
     ) -> None:
         self.client = client

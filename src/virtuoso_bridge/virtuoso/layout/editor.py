@@ -3,7 +3,7 @@
 Usage:
     from virtuoso_bridge.virtuoso.layout.ops import *
 
-    with client.layout.edit(LIB, CELL) as lay:
+    with client.layout.create(LIB, CELL) as lay:
         lay.add(layout_create_rect("M1", "drawing", 0, 0, 1, 0.5))
         lay.add(layout_create_param_inst("tsmcN28", "nch_ulvt_mac", "layout", "M0", 0, 0, "R0"))
         lay.add(layout_create_via_by_name("M1_M2", 0.5, 0.25))
@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from virtuoso_bridge.virtuoso.editor import ensure_operation_response
 from virtuoso_bridge.virtuoso.ops import (
     close_current_cellview,
+    open_cell_view,
     save_current_cellview,
 )
 from virtuoso_bridge.virtuoso.layout.ops import (
@@ -36,7 +37,7 @@ class LayoutEditor:
         lib: str,
         cell: str,
         view: str = "layout",
-        mode: str = "w",
+        mode: str = "a",
         timeout: int = 60,
     ) -> None:
         self.client = client
@@ -48,11 +49,15 @@ class LayoutEditor:
         self.commands: list[str] = []
 
     def __enter__(self) -> LayoutEditor:
-        self.commands.append(
-            layout_bind_current_or_open_cell_view(
-                self.lib, self.cell, view=self.view, mode=self.mode,
+        if self.mode == "w":
+            # Creation must not silently reuse an open existing cellview.
+            self.commands.append(open_cell_view(self.lib, self.cell, view=self.view, mode="w"))
+        else:
+            self.commands.append(
+                layout_bind_current_or_open_cell_view(
+                    self.lib, self.cell, view=self.view, mode=self.mode,
+                )
             )
-        )
         return self
 
     def add(self, skill_cmd: str) -> None:

@@ -29,7 +29,7 @@ def main() -> int:
     cell = f"VB_MANUAL_SYMBOL_{datetime.now():%Y%m%d_%H%M%S}"
     client = VirtuosoClient.from_env()
 
-    with client.symbol.edit(lib, cell) as symbol:
+    with client.symbol.create(lib, cell) as symbol:
         symbol.add(
             symbol_create_polygon(
                 "device",

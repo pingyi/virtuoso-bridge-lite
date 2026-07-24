@@ -21,7 +21,7 @@ from virtuoso_bridge.virtuoso.schematic import (
     schematic_create_wire_between_instance_terms as wire,
 )
 
-with client.schematic.edit(lib, cell) as sch:
+with client.schematic.create(lib, cell) as sch:
     sch.add(inst("analogLib", "vdc", "symbol", "V0", 0, 0, "R0"))
     sch.add(wire("V0", "PLUS", "R0", "PLUS"))
     sch.add(pin("OUT", 3.0, 0.5, "R0", direction="output"))
@@ -36,6 +36,19 @@ with client.schematic.edit(lib, cell) as sch:
 |--------|-------------|
 | `add(skill_cmd)` | Queue any SKILL command string (from ops functions) |
 | `add_net_label_to_transistor(inst, drain_net, gate_net, source_net, body_net)` | Label MOS D/G/S/B terminals with net stubs |
+
+### Open mode is explicit
+
+Use `client.schematic.create(lib, cell)` to create or deliberately replace a
+schematic. Use `client.schematic.modify(lib, cell)` to append changes to an
+existing schematic without clearing it. The legacy `edit()` method is
+deprecated and now defaults to safe append mode.
+
+Read a schematic through the same client-bound API:
+
+```python
+data = client.schematic.read(lib, cell, include_positions=False)
+```
 
 ### SKILL builder functions (ops)
 
@@ -53,29 +66,6 @@ Use these with `sch.add(...)`:
 | `schematic_create_net_stub(net, x, y, *, direction, length)` | wire + `schCreateWireLabel` | Short named electrical connection |
 | `schematic_create_net_expression(net, expression, x, y)` | `schCreateNetExpression` | Attach inherited-connection expression |
 | `schematic_set_netset_property(instance, property, net)` | `dbReplaceProp` | Set an inherited-connection override |
-
-## SchematicOps (direct execution)
-
-Same operations as `SchematicEditor` but executed immediately (not batched).
-
-```python
-client.schematic.add_instance("analogLib", "vdc", (0, 0), name="V0")
-client.schematic.add_wire_between_instance_terms("V0", "PLUS", "R0", "PLUS")
-```
-
-| Method | SKILL | Description |
-|--------|-------|-------------|
-| `open(lib, cell, *, view, mode)` | `dbOpenCellViewByType` | Open cellview |
-| `save()` | `dbSave(cv)` | Save current cellview |
-| `check()` | `schCheck(cv)` | Run schematic check |
-| `add_instance(lib, cell, xy, *, orientation, view, name)` | `dbCreateInst` | Add instance |
-| `add_wire(points)` | `schCreateWire` | Add wire |
-| `add_label(xy, text, *, justification, rotation)` | `schCreateWireLabel` | Add label |
-| `add_pin(name, xy, *, orientation, direction)` | `schCreatePin` | Add pin |
-| `add_pin_to_instance_term(inst, term, pin_name, *, direction, orientation)` | `schCreatePin` at terminal | Add pin at terminal |
-| `add_wire_between_instance_terms(from_inst, from_term, to_inst, to_term)` | `schCreateWire` between terminals | Wire two terminals |
-| `add_net_label_to_instance_term(inst, term, net_name)` | Wire stub + label | Label terminal |
-| `add_net_label_to_transistor(inst, drain, gate, source, body)` | Multiple wire stubs | Label MOS D/G/S/B |
 
 ## Netlist import and export
 

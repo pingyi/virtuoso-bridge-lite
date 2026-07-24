@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 from typing import Any, Callable, Literal, TYPE_CHECKING
 
@@ -59,9 +60,40 @@ class LayoutOps:
     def __init__(self, owner: VirtuosoClient) -> None:
         self._owner = owner
 
-    def edit(self, lib: str, cell: str, view: str = "layout",
-             mode: str = "w", timeout: int = 60) -> LayoutEditor:
-        """Return a LayoutEditor context manager."""
+    def create(
+        self,
+        lib: str,
+        cell: str,
+        view: str = "layout",
+        timeout: int = 60,
+    ) -> LayoutEditor:
+        """Create a layout editor, replacing an existing view if present."""
+        return LayoutEditor(self._owner, lib, cell, view=view, mode="w", timeout=timeout)
+
+    def modify(
+        self,
+        lib: str,
+        cell: str,
+        view: str = "layout",
+        timeout: int = 60,
+    ) -> LayoutEditor:
+        """Open a layout editor in append mode without clearing its view."""
+        return LayoutEditor(self._owner, lib, cell, view=view, mode="a", timeout=timeout)
+
+    def edit(
+        self,
+        lib: str,
+        cell: str,
+        view: str = "layout",
+        mode: Literal["a", "w"] = "a",
+        timeout: int = 60,
+    ) -> LayoutEditor:
+        """Deprecated compatibility wrapper for :meth:`create` / :meth:`modify`."""
+        warnings.warn(
+            "client.layout.edit() is deprecated; use create() or modify() explicitly.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return LayoutEditor(self._owner, lib, cell, view=view, mode=mode, timeout=timeout)
 
     def export_gds(

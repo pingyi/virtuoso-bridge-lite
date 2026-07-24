@@ -63,8 +63,10 @@ from virtuoso_bridge.virtuoso.maestro.waveform_viewer import (
     maestro_open_waveform_viewer_skill,
     open_waveform_viewer,
 )
+from virtuoso_bridge.virtuoso.maestro.ops import MaestroOps
 
 __all__ = [
+    "MaestroOps",
     # session
     "open_session",
     "close_session",

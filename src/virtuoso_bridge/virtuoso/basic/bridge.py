@@ -92,6 +92,12 @@ class VirtuosoClient(VirtuosoInterface):
         self.library = LibraryOps(self)
         self.schematic = SchematicOps(self)
         self.symbol = SymbolOps(self)
+        # Maestro imports the public client type, so defer its facade import
+        # until this client instance is constructed and module initialization
+        # is complete.
+        from virtuoso_bridge.virtuoso.maestro.ops import MaestroOps
+
+        self.maestro = MaestroOps(self)
         self._il_upload_cache: dict[str, tuple[str, str]] = {}
         # For connect retry when jump host adds latency
         self._has_jump_host = (
@@ -1345,7 +1351,7 @@ let((result winName ciwNum)
 
     def run_il_file(self, path: str | Path, lib: str, cell: str, *,
                     view: str = "layout", view_type: str | None = None,
-                    mode: str = "w", open_window: bool = True,
+                    mode: str = "a", open_window: bool = True,
                     save: bool = False, timeout: int | None = None) -> VirtuosoResult:
         effective_timeout = timeout if timeout is not None else self._timeout
         opened = self.open_cell_view(lib, cell, view=view, view_type=view_type, mode=mode, timeout=effective_timeout)

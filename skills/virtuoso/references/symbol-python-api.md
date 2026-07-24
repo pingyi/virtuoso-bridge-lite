@@ -63,14 +63,16 @@ while a normal label on `annotate/drawing` is only drawing text.
 native symbol property, and `termOrder` is retained separately for existing
 callers and manually authored symbols.
 
-## Edit Symbol
+## Create or Modify a Symbol
 
-Use `client.symbol.edit()` as a context manager with the builders exported by
+Use `client.symbol.create()` to deliberately replace a symbol view, or
+`client.symbol.modify()` to append to an existing view. Both context managers
+use the builders exported by
 `virtuoso_bridge.virtuoso.symbol.ops`. Before saving on context exit, the
 editor verifies that the open symbol can produce a pin list through Cadence's
 symbol-specific `schSymbolToPinList()` API. Cadence rejects non-symbol
 cellviews with `SCH-1004`, while unsuccessful pin-list generation also fails
-the edit. This validation does not run schematic connectivity, SRC, or VIC;
+the operation. This validation does not run schematic connectivity, SRC, or VIC;
 `schCheck()` remains schematic-only.
 
 ### Drawing and semantic labels
@@ -130,7 +132,7 @@ not infer this geometry because the caller controls the drawing.
 ### Complete manual symbol
 
 ```python
-with client.symbol.edit("demoLib", "prettyBlock") as symbol:
+with client.symbol.create("demoLib", "prettyBlock") as symbol:
     symbol.add(symbol_create_polygon(
         "device", "drawing",
         [(-1.0, -0.75), (-1.0, 0.75), (1.0, 0.0)],

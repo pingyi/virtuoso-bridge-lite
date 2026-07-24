@@ -43,7 +43,7 @@ ROW_PITCH = 1.0  # vertical spacing between channels (schematic units)
 
 def _create_schematic(client: VirtuosoClient, lib: str, cell: str) -> None:
     """10 horizontal resistors stacked vertically; one IN<i>/OUT<i> pair each."""
-    with client.schematic.edit(lib, cell) as sch:
+    with client.schematic.create(lib, cell) as sch:
         for i in range(N_CHANNELS):
             y = -i * ROW_PITCH
             # R<i> oriented R90 → PLUS on left at x≈0.0, MINUS on right at x≈1.0.

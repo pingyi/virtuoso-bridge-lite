@@ -1275,7 +1275,6 @@ def cli_snapshot() -> int:
     from virtuoso_bridge import VirtuosoClient
     from virtuoso_bridge.virtuoso import snapshot as poly_snapshot
     from virtuoso_bridge.virtuoso.snapshot import classify_window
-    from virtuoso_bridge.virtuoso.maestro import snapshot as _maestro_snapshot
 
     client = VirtuosoClient.from_env()
     opts = _SNAPSHOT_OPTS
@@ -1293,8 +1292,7 @@ def cli_snapshot() -> int:
             print(f"[{kind}] {title}", file=sys.stderr)
             print(f"-o ROOT only supports maestro for now.", file=sys.stderr)
             return 1
-        result = _maestro_snapshot(
-            client,
+        result = client.maestro.snapshot(
             output_root=opts["output_root"],
             history=opts.get("history"),
         )
@@ -1322,7 +1320,7 @@ def cli_snapshot() -> int:
 
     # Maestro brief: just call snapshot() (no output_root) and render
     # its sparse dict.  2 SKILL round-trips total, no scp.  ~150ms.
-    snap = _maestro_snapshot(client)
+    snap = client.maestro.snapshot()
     _print_maestro_brief(snap)
     return 0
 
