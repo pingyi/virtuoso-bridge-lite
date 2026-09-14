@@ -332,6 +332,7 @@ def _restart_daemon_one(profile: str | None) -> None:
         timeout=5,
         log_to_ciw=False,
     )
+    client.daemon_token = _state_or_local_daemon_token(state, profile)
     try:
         user_check = check_daemon_user(client, profile=profile, timeout=5)
     except Exception as exc:
@@ -386,6 +387,32 @@ def cli_restart() -> int:
 
 
 # -- status -----------------------------------------------------------------
+
+def _state_or_local_daemon_token(state: dict | None, profile: str | None) -> str | None:
+    """Token for a bare diagnostics client: SSH fetch or local read.
+
+    The token never lives in state.json (normally readable); it is fetched
+    over SSH for remote daemons or read from the local token file.  Both
+    fallbacks are read-only — the daemon (or `local()`) provisions the file;
+    diagnostics never create one and never raise.
+    """
+    from virtuoso_bridge import daemon_auth
+    from virtuoso_bridge.transport.tunnel import _is_localhost
+
+    remote = bool((state or {}).get("remote_host")) and not _is_localhost(
+        (state or {}).get("remote_host")
+    )
+    if remote:
+        try:
+            from virtuoso_bridge.transport.tunnel import SSHClient
+
+            ssh = SSHClient.from_env(keep_remote_files=True, profile=profile)
+            return ssh.ensure_daemon_token()
+        except Exception as exc:
+            print(f"[warning] daemon token unavailable: {exc}")
+            return None
+    return daemon_auth.read_local_token()
+
 
 def _print_load_hint(setup_path: str) -> None:
     """Print CIW load command and .cdsinit auto-load suggestion."""
@@ -522,9 +549,18 @@ def _print_status() -> int:
             return 1
         port = state["port"]
         try:
+            from virtuoso_bridge.models import ExecutionStatus
+
             vc = VirtuosoClient(host="127.0.0.1", port=port, timeout=5)
-            ok = vc.test_connection(timeout=5)
-            print(f"\n[daemon] {'OK - connected to Virtuoso CIW' if ok else 'NO RESPONSE'}")
+            vc.daemon_token = _state_or_local_daemon_token(state, profile)
+            probe = vc.execute_skill("1+1", timeout=5)
+            ok = probe.status == ExecutionStatus.SUCCESS
+            if not ok and any(
+                "authentication" in err.lower() for err in probe.errors or []
+            ):
+                print(f"\n[daemon] AUTH FAILED - {probe.errors[0]}")
+            else:
+                print(f"\n[daemon] {'OK - connected to Virtuoso CIW' if ok else 'NO RESPONSE'}")
             if ok:
                 from virtuoso_bridge.daemon_guard import check_daemon_user
 
@@ -553,6 +589,7 @@ def _print_status() -> int:
 
                 # Query Virtuoso environment info
                 for skill_expr, label in [
+                    ('getpid()', 'virtuoso pid'),
                     ('getHostName()', 'CIW host'),
                     ('getCurrentTime()', 'time'),
                     ('getVersion()', 'version'),
@@ -1273,6 +1310,7 @@ def cli_doc_search(
     list_roots: bool,
     json_output: bool,
     rebuild_index: bool,
+    cache_dir: str | None = None,
 ) -> int:
     """Search installed Cadence documentation locally or through the bridge."""
     import json as _json
@@ -1285,7 +1323,7 @@ def cli_doc_search(
         roots = resolve_doc_roots(doc_roots)
         payload: dict[str, object]
         if list_roots:
-            payload = {"ok": True, "doc_roots": [str(root) for root in roots]}
+            payload = {"ok": True, "doc_roots": [str(root) for root in roots], "results": []}
         else:
             if not query:
                 print("Error: query argument required for 'doc-search'", file=sys.stderr)
@@ -1293,6 +1331,9 @@ def cli_doc_search(
             if not roots:
                 print("Error: no existing Cadence doc roots found for --doc-root.", file=sys.stderr)
                 return 1
+            local_cache_root = (
+                Path(cache_dir).expanduser() if cache_dir else runtime_cache_dir("docs_search") / "local"
+            )
             payload = {
                 "ok": True,
                 "query": query,
@@ -1300,7 +1341,7 @@ def cli_doc_search(
                 "results": search_docs(
                     query,
                     roots,
-                    cache_root=runtime_cache_dir("docs_search") / "local",
+                    cache_root=local_cache_root,
                     limit=max(limit, 0),
                     rebuild=rebuild_index,
                 ),
@@ -1321,7 +1362,12 @@ def cli_doc_search(
             if not query:
                 print("Error: query argument required for 'doc-search'", file=sys.stderr)
                 return 1
-            client_payload = client.search_docs(query, limit=max(limit, 0), rebuild_index=rebuild_index)
+            client_payload = client.search_docs(
+                query,
+                limit=max(limit, 0),
+                rebuild_index=rebuild_index,
+                cache_dir=cache_dir,
+            )
             payload = {
                 "ok": True,
                 "query": query,
@@ -1363,6 +1409,87 @@ def cli_doc_search(
         snippet = result.get("snippet")
         if snippet:
             print(f"  {snippet}")
+    return 0
+
+
+def cli_doc_info(
+    *,
+    doc_roots: list[Path],
+    json_output: bool,
+) -> int:
+    """Report Virtuoso version + documentation structure for doc roots."""
+    import json as _json
+    import sys
+
+    if doc_roots:
+        from virtuoso_bridge.virtuoso.docs_search import doc_root_info_local, resolve_doc_roots
+
+        roots = resolve_doc_roots(doc_roots)
+        payload: dict[str, object] = {
+            "ok": True,
+            "doc_roots": doc_root_info_local(roots),
+        }
+        if not payload["doc_roots"]:
+            print(
+                "Error: no existing Cadence doc roots found for --doc-root.",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        _load_cli_env()
+        from virtuoso_bridge import VirtuosoClient
+
+        client = VirtuosoClient.from_env(profile=_get_cli_profile())
+        payload = client.doc_info()
+        if not payload.get("doc_roots"):
+            print(
+                "Error: no Cadence doc roots found. Pass --doc-root or configure "
+                "a Virtuoso Bridge profile with access to the Cadence installation.",
+                file=sys.stderr,
+            )
+            return 1
+
+    if json_output:
+        print(_json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    for info in payload["doc_roots"]:
+        if not isinstance(info, dict):
+            continue
+        version = info.get("virtuoso_version") or "unknown"
+        source = info.get("version_source") or "none"
+        if source == "none":
+            version_text = "unknown (no version evidence)"
+        else:
+            version_text = f"{version} (source: {source})"
+        finder = info.get("skill_finder") or {}
+        tgf = info.get("api_more_info") or {}
+        skdfref = info.get("skdfref") or {}
+        print(f"doc root      : {info.get('doc_root')}")
+        print(f"install root  : {info.get('install_root')}")
+        print(f"virtuoso      : {version_text}")
+        sample = ", ".join(info.get("doc_sets_sample", [])[:8])
+        more = "" if len(info.get("doc_sets_sample", [])) <= 8 else ", ..."
+        print(f"doc sets      : {info.get('doc_set_count')} ({sample}{more})")
+        finder_state = (
+            f"found, {finder.get('fnd_count')} .fnd files"
+            if finder.get("found")
+            else "NOT FOUND"
+        )
+        print(f"skill finder  : {finder.get('path')} ({finder_state})")
+        tgf_state = (
+            f"found, {tgf.get('tgf_bytes')} bytes"
+            if tgf.get("found")
+            else "NOT FOUND"
+        )
+        print(f"more-info tgf : {tgf.get('tgf')} ({tgf_state})")
+        style = (
+            f"{skdfref.get('style')} ({skdfref.get('html_count')} html pages)"
+            if skdfref.get("found")
+            else "not present"
+        )
+        print(f"skdfref       : {style}")
+        print()
     return 0
 
 
@@ -1846,8 +1973,33 @@ def build_parser() -> argparse.ArgumentParser:
     sp_doc_search.add_argument("-n", "--limit", type=int, default=10, help="Maximum results to return")
     sp_doc_search.add_argument("--json", action="store_true", help="Output results as JSON")
     sp_doc_search.add_argument("--rebuild-index", action="store_true", help="Force rebuilding the local documentation search index")
+    sp_doc_search.add_argument("--cache-dir", default=None, help="Override the local docs-search cache directory (default: user cache)")
     sp_doc_search.add_argument("-p", "--profile", default=None, help="Connection profile")
     sp_doc_search.add_argument("--env", default=None, help="Explicit .env file path (highest priority)")
+
+    sp_doc_info = subparsers.add_parser(
+        "doc-info",
+        help="Report Virtuoso version + documentation structure for doc roots",
+        description=(
+            "Reports, for each resolved Cadence documentation root: the active "
+            "Virtuoso version (parsed from install-root .sdp names or the install "
+            "directory name), documentation-set count, SKILL Finder database, "
+            "More Info .tgf, and skdfref page style (chapter vs per-function). "
+            "Docs differ between Virtuoso versions — run this first so lookups "
+            "target the correct tree. Omit --doc-root to discover docs through "
+            "the active Virtuoso Bridge profile."
+        ),
+    )
+    sp_doc_info.add_argument(
+        "--doc-root",
+        type=Path,
+        action="append",
+        default=[],
+        help="Cadence doc root; may be repeated",
+    )
+    sp_doc_info.add_argument("--json", action="store_true", help="Output results as JSON")
+    sp_doc_info.add_argument("-p", "--profile", default=None, help="Connection profile")
+    sp_doc_info.add_argument("--env", default=None, help="Explicit .env file path (highest priority)")
 
     sp_windows = subparsers.add_parser("windows", help="List all open Virtuoso windows")
     sp_windows.add_argument("-p", "--profile", default=None,
@@ -2003,6 +2155,11 @@ def main(argv: list[str] | None = None) -> int:
             list_roots=getattr(args, "list_roots", False),
             json_output=getattr(args, "json", False),
             rebuild_index=getattr(args, "rebuild_index", False),
+            cache_dir=getattr(args, "cache_dir", None),
+        ),
+        "doc-info": lambda: cli_doc_info(
+            doc_roots=getattr(args, "doc_root", []),
+            json_output=getattr(args, "json", False),
         ),
     }
     screenshot_target = getattr(args, "target", None)
