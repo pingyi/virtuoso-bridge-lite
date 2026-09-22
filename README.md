@@ -104,6 +104,16 @@ virtuoso-bridge bootstrap --window 0x3000012
 `bootstrap` refuses windows that are not identified as a CIW and does not
 accept arbitrary SKILL text.
 
+### Optional IPC logging
+
+Daemon IPC logging is disabled by default. To enable it, set
+`RB_LOG_ENABLED=1` in the environment that launches the Virtuoso process.
+`RB_LOG_PATH` optionally selects the file; when it is unset or empty, the log
+is written as `ramic-bridge.log` in Virtuoso's working directory. These are
+CIW-process variables, not bridge `.env` settings, and changing them does not
+alter an already running Virtuoso process. The monitor's logging toggle uses
+the configured path and restarts only the bridge daemon.
+
 ### Split GUI and daemon hosts
 
 `VB_REMOTE_HOST` remains the simple one-host setting. In installations where
@@ -213,6 +223,18 @@ client.schematic.capture_import_result(result, "output/evidence")
 
 See [`examples/01_virtuoso/schematic_manifest/`](examples/01_virtuoso/schematic_manifest/)
 for the portable JSON contracts and a complete runner.
+
+For operation-scoped schematic diagnostics, use:
+
+```python
+report = client.schematic.check_and_save("myLib", "myCell")
+print(report.status, report.check_error_count, report.check_warning_count)
+for diagnostic in report.diagnostics:
+    print(diagnostic.severity, diagnostic.code, diagnostic.message)
+```
+
+This captures only messages emitted by the current `schCheck`/`dbSave`, and
+reports a blocking modal separately instead of mixing in stale CIW history.
 
 For fail-fast access to standalone Spectre PSF ASCII artifacts, use the strict
 helpers instead of guessing filenames, keys, or value shapes:

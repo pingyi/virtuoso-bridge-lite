@@ -60,6 +60,14 @@ from virtuoso_bridge.virtuoso.schematic.exact_geometry import (
     solve_exact_geometry,
     source_orientation,
 )
+from virtuoso_bridge.virtuoso.schematic.diagnostics import (
+    CheckSaveStatus,
+    DiagnosticSeverity,
+    SchematicCheckSaveResult,
+    SchematicDiagnostic,
+    check_and_save_schematic,
+    schematic_check_save_diagnostics_skill,
+)
 from virtuoso_bridge.virtuoso.schematic.manifest import (
     apply_terminal_escape_detours,
     capture_import_result,
@@ -70,7 +78,6 @@ from virtuoso_bridge.virtuoso.schematic.manifest import (
     load_schematic_manifest,
     plan_manifest_circuit,
     prepare_schematic_for_process,
-    reconcile_split_net_components,
     validate_process_master_offsets,
     verify_manifest_circuit,
 )
@@ -183,6 +190,28 @@ class SchematicOps:
         with self.create(lib, cell, view=view, timeout=timeout) as editor:
             plan.apply(editor)
 
+    def check_and_save(
+        self,
+        lib: str,
+        cell: str,
+        *,
+        view: str = "schematic",
+        timeout: int = 60,
+        capture_screenshot: bool = False,
+        screenshot_output: str | Path | None = None,
+    ) -> SchematicCheckSaveResult:
+        """Check/save one cellview with operation-scoped CIW diagnostics."""
+
+        return check_and_save_schematic(
+            self._owner,
+            lib,
+            cell,
+            view=view,
+            timeout=timeout,
+            capture_screenshot=capture_screenshot,
+            screenshot_output=screenshot_output,
+        )
+
     def import_manifest(
         self,
         manifest: str | Path | dict[str, Any],
@@ -192,6 +221,7 @@ class SchematicOps:
         cells: list[str] | tuple[str, ...] | None = None,
         verify: bool = True,
         validate_masters: bool = True,
+        overwrite: bool = False,
         timeout: int = 180,
     ) -> dict[str, Any]:
         """Import exact-coordinate schematic manifests through mapped PDKs."""
@@ -204,6 +234,7 @@ class SchematicOps:
             cells=cells,
             verify=verify,
             validate_masters=validate_masters,
+            overwrite=overwrite,
             timeout=timeout,
         )
 
@@ -306,6 +337,12 @@ __all__ = [
     "schematic_create_wire_between_instance_terms",
     "schematic_create_net_stub",
     "schematic_check",
+    "CheckSaveStatus",
+    "DiagnosticSeverity",
+    "SchematicCheckSaveResult",
+    "SchematicDiagnostic",
+    "schematic_check_save_diagnostics_skill",
+    "check_and_save_schematic",
     "SchematicNetlistExportResult",
     "schematic_export_netlist_skill",
     "export_schematic_netlist",
@@ -344,7 +381,6 @@ __all__ = [
     "plan_manifest_circuit",
     "validate_process_master_offsets",
     "apply_terminal_escape_detours",
-    "reconcile_split_net_components",
     "import_manifest_circuit",
     "verify_manifest_circuit",
     "import_schematic_manifest",
