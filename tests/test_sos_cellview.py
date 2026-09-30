@@ -21,8 +21,29 @@ def _skill_ok(output):
     return VirtuosoResult(status=ExecutionStatus.SUCCESS, output=output)
 
 
-def _state(state="O", change="M", revision="3", *, lock="-", path=PATH, kind="p"):
-    return CommandResult(0, f"{kind}\t{state}\t{change}\t{lock}\t-\t-\t{revision}\t./{path}\n", "")
+def _state(state="O", change="M", revision="3", *, lock="-", newer="-", rso="-",
+           path=PATH, kind="p"):
+    return CommandResult(
+        0, f"{kind}\t{state}\t{change}\t{lock}\t{newer}\t{rso}\t{revision}\t./{path}\n", "",
+    )
+
+
+def _nobj(status=5, kind=3, revision="3", *, modified="0", ci_modified="0",
+          out_of_date="0", reference="", path=PATH, attributes=None):
+    values = attributes if attributes is not None else {
+        "CurrentVer": revision,
+        "Modified": modified,
+        "CiModified": ci_modified,
+        "OutOfDate": out_of_date,
+        "Reference": reference,
+        "Revision": revision,
+    }
+    rows = ["!nObjStatus! 1", "!Record!", "./" + path, str(status), str(kind)]
+    for key, value in values.items():
+        rows.extend([key, str(len(value.encode("utf-8")))])
+        if value:
+            rows.append(value)
+    return CommandResult(0, "\n".join(rows) + "\n", "")
 
 
 class _Client:
@@ -30,7 +51,7 @@ class _Client:
 
     def __init__(self, *, before=None, after=None, dirty=False, view_type="schematic",
                  mutation=None, native=False, native_dispatch=None, native_result=None,
-                 maestro=False):
+                 maestro=False, discard=None, nobj=None):
         self.sos_runner = self
         self.commands = []
         self.skill_calls = []
@@ -38,6 +59,7 @@ class _Client:
             before if before is not None else _state(),
             after if after is not None else _state("-", "-", "4"),
         ])
+        self.nobj = iter(nobj if nobj is not None else [])
         self.resolution = _skill_ok(
             f'("ok" {json.dumps(DIRECTORY)} {json.dumps(MASTER)} '
             f'{json.dumps(view_type)} {"t" if dirty else "nil"})'
@@ -49,6 +71,7 @@ class _Client:
         self.native_result = (native_result if native_result is not None
                               else _skill_ok('("ok" t t t nil)'))
         self.maestro = maestro
+        self.discard = discard if discard is not None else CommandResult(0, "", "")
         self.root = CommandResult(0, ROOT + "\n", "")
         self.sos = SOSOps(self)
 
@@ -60,6 +83,21 @@ class _Client:
         assert parts[:2] == ["cd", DIRECTORY if "findwaroot" in parts else ROOT]
         if parts[-1] == "findwaroot":
             return self.root
+        if parts[3:5] == ["/opt/sos/bin/soscmd", "discardco"]:
+            assert parts[5:] == ["./" + PATH]
+            if isinstance(self.discard, Exception):
+                raise self.discard
+            return self.discard
+        if parts[3:5] == ["/opt/sos/bin/soscmd", "nobjstatus"]:
+            assert parts[5:-1] == [
+                "-gaRevision", "-gaCurrentVer", "-gaModified",
+                "-gaCiModified", "-gaOutOfDate",
+                "-gaReference",
+            ]
+            state = next(self.nobj)
+            if isinstance(state, Exception):
+                raise state
+            return state
         assert parts[3:6] == ["/opt/sos/bin/soscmd", "status", "-Nhdr"]
         assert parts[-1] == "./" + PATH
         state = next(self.states)
@@ -98,11 +136,16 @@ class _Client:
     def writes(self):
         return [code for code, _ in self.skill_calls
                 if "ddCheckin(" in code or "ddCheckout(" in code
-                or "VB_SOS_NATIVE_DISPATCH" in code]
+                or "VB_SOS_NATIVE_DISPATCH" in code] + [
+                    command for command in self.commands if " discardco " in command]
 
 
 def _ci(client, **kwargs):
     return client.sos.checkin_cellview("lib", "cell", "schematic_Vt", message="Saved changes", **kwargs)
+
+
+def _cancel(client, **kwargs):
+    return client.sos.cancel_checkout_cellview("lib", "cell", "schematic_Vt", **kwargs)
 
 
 def _unmanaged(kind="d", path=PATH):
@@ -270,6 +313,114 @@ def test_normal_checkin_still_rejects_unmanaged_view():
     assert not client.writes
 
 
+def test_status_uses_server_queried_nobjstatus_fallback():
+    client = _Client(
+        before=CommandResult(1, "", "status denied"),
+        nobj=[_nobj(status=3, revision="7", modified="1", out_of_date="1")],
+    )
+    result = client.sos.status_cellview("lib", "cell", "schematic_Vt")
+    assert result.outcome == "success"
+    assert result.after is None
+    assert (result.before.object_type, result.before.state, result.before.change,
+            result.before.lock, result.before.newer, result.before.rso,
+            result.before.revision) == (
+                "p", "O", "M", "-", "N", "-", "7",
+            )
+    fallback = [command for command in client.commands if " nobjstatus " in command]
+    assert len(fallback) == 1 and " -ucl " not in fallback[0]
+
+
+def test_nobjstatus_allows_unavailable_cimodified_attribute():
+    client = _Client(
+        before=CommandResult(1, "", "status denied"),
+        nobj=[_nobj(status=3, revision="7", attributes={
+            "CurrentVer": "7", "Revision": "7", "Modified": "1",
+            "OutOfDate": "0", "Reference": "",
+        })],
+    )
+    result = client.sos.status_cellview("lib", "cell", "schematic_Vt")
+    assert result.outcome == "success"
+    assert result.before.state == "O" and result.before.change == "M"
+
+
+def test_nobjstatus_rejects_invalid_cimodified_when_returned():
+    client = _Client(
+        before=CommandResult(1, "", "status denied"),
+        nobj=[_nobj(status=3, revision="7", ci_modified="invalid")],
+    )
+    result = client.sos.status_cellview("lib", "cell", "schematic_Vt")
+    assert result.outcome == "failed"
+    assert "invalid CiModified" in result.diagnostics[0]
+
+
+def test_cancel_checkout_can_verify_through_nobjstatus_fallback():
+    denied = CommandResult(1, "", "status denied")
+    client = _Client(nobj=[
+        _nobj(status=3, revision="5"),
+        _nobj(status=3, revision="5"),
+        _nobj(status=5, revision="5"),
+    ])
+    client.states = iter([denied, denied, denied])
+    result = _cancel(client)
+    assert result.outcome == "success"
+    assert result.before.revision == result.after.revision == "5"
+    assert len(client.writes) == 1
+
+
+def test_register_can_verify_through_nobjstatus_fallback():
+    denied = CommandResult(1, "", "status denied")
+    client = _registration_client()
+    client.states = iter([denied, denied, denied])
+    client.nobj = iter([
+        _nobj(status=2), _nobj(status=2), _nobj(status=5, revision="1"),
+    ])
+    result = _register(client)
+    assert result.outcome == "success"
+    assert result.after.revision == "1" and result.after.rso == "-"
+    assert len(client.writes) == 1
+
+
+@pytest.mark.parametrize("action", ["co", "cancel_co", "ci"])
+def test_nobjstatus_reference_objects_never_trigger_writes(action):
+    client = _Client(
+        before=CommandResult(1, "", "status denied"),
+        nobj=[_nobj(status=5 if action == "co" else 3, reference="linked")],
+    )
+    if action == "co":
+        result = client.sos.checkout_cellview("lib", "cell", "schematic_Vt")
+    elif action == "cancel_co":
+        result = _cancel(client)
+    else:
+        result = _ci(client)
+    assert result.outcome == "blocked" and result.before.rso == "R"
+    assert not client.writes
+
+
+def test_nobjstatus_unlocked_checkout_remains_blocked():
+    client = _Client(
+        before=CommandResult(1, "", "status denied"),
+        nobj=[_nobj(status=6, revision="5")],
+    )
+    result = _cancel(client)
+    assert result.outcome == "blocked"
+    assert result.before.lock == "?"
+    assert not client.writes
+
+
+def test_malformed_nobjstatus_fallback_never_triggers_write():
+    client = _Client(
+        before=CommandResult(1, "", "status denied"),
+        nobj=[_nobj(attributes={
+            "CurrentVer": "4", "Revision": "5", "Modified": "0",
+            "CiModified": "0", "OutOfDate": "0", "Reference": "",
+        })],
+    )
+    result = _cancel(client)
+    assert result.outcome == "failed"
+    assert "inconsistent revision" in result.diagnostics[0]
+    assert not client.writes
+
+
 @pytest.mark.parametrize('notice', [
     '** The flags and attributes have been updated.\n',
     "## All servers for project 'FCGMASH' are online.\n",
@@ -400,6 +551,88 @@ def test_checkout_verified():
     result = client.sos.checkout_cellview("lib", "cell", "schematic_Vt")
     assert result.ok and result.after.state == "O"
     assert len(client.writes) == 1
+
+
+def test_cancel_checkout_releases_only_clean_package_without_force():
+    client = _Client()
+    client.states = iter([
+        _state("O", "-", "3"), _state("O", "-", "3"), _state("-", "-", "3"),
+    ])
+    result = _cancel(client)
+    assert result.outcome == "success" and result.after.revision == "3"
+    assert len(client.writes) == 1
+    command = shlex.split(client.writes[0])
+    assert command[3:] == ["/opt/sos/bin/soscmd", "discardco", "./" + PATH]
+    assert "-F" not in command
+
+
+@pytest.mark.parametrize("state,expected", [
+    (_state("O", "M"), "blocked"),
+    (_state("-", "-"), "noop"),
+    (_state("O", "-", lock="L"), "blocked"),
+])
+def test_cancel_checkout_preconditions_never_discard(state, expected):
+    client = _Client(before=state)
+    result = _cancel(client)
+    assert result.outcome == expected
+    assert not client.writes
+
+
+def test_cancel_checkout_rechecks_sos_state_before_discard():
+    client = _Client()
+    client.states = iter([_state("O", "-"), _state("O", "M")])
+    result = _cancel(client)
+    assert result.outcome == "blocked"
+    assert not client.writes
+
+
+def test_cancel_checkout_lost_reply_is_unknown_and_never_retried():
+    client = _Client(discard=TimeoutError("response lost"))
+    client.states = iter([
+        _state("O", "-", "3"), _state("O", "-", "3"), _state("-", "-", "3"),
+    ])
+    result = _cancel(client)
+    assert result.outcome == "unknown" and result.after.state == "-"
+    assert len(client.writes) == 1
+
+
+def test_cancel_checkout_nonzero_reply_with_matching_state_is_unknown():
+    client = _Client(discard=CommandResult(1, "", "server error"))
+    client.states = iter([
+        _state("O", "-", "3"), _state("O", "-", "3"), _state("-", "-", "3"),
+    ])
+    result = _cancel(client)
+    assert result.outcome == "unknown" and "server error" in result.diagnostics[0]
+    assert len(client.writes) == 1
+
+
+def test_cancel_checkout_requires_same_revision_after_discard():
+    client = _Client()
+    client.states = iter([
+        _state("O", "-", "3"), _state("O", "-", "3"), _state("-", "-", "4"),
+    ])
+    result = _cancel(client)
+    assert result.outcome == "failed"
+    assert len(client.writes) == 1
+
+
+def test_cancel_checkout_dry_run_does_not_discard():
+    client = _Client(before=_state("O", "-"))
+    assert _cancel(client, dry_run=True).outcome == "dry_run"
+    assert not client.writes
+
+
+def test_cancel_checkout_blocks_unsaved_connected_buffer():
+    client = _Client(dirty=True, before=_state("O", "-"))
+    result = _cancel(client)
+    assert result.outcome == "blocked" and not client.writes
+
+
+def test_cancel_checkout_blocks_calibre_before_remote_access():
+    client = _Client()
+    result = client.sos.cancel_checkout_cellview("lib", "cell", "Calibre_PEX")
+    assert result.outcome == "blocked"
+    assert not client.skill_calls and not client.commands
 
 
 @pytest.mark.parametrize("view_type", ["schematic", "schematicSymbol", "maskLayout"])

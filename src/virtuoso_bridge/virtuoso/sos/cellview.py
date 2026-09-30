@@ -307,10 +307,17 @@ def _native_result(owner: VirtuosoClient, timeout: float) -> list:
 
 
 def _maestro_active(owner: VirtuosoClient, timeout: float) -> bool:
-    result = _decode(owner.execute_skill(f'''prog(())
+    result = _decode(owner.execute_skill(f'''prog((vbSessions vbSessionsResult)
   ; {_MAESTRO_PROBE_MARKER}
-  return(list("ok" if(isCallable('maeGetSessions) && maeGetSessions() then t else nil)))
+  when(isCallable('maeGetSessions)
+    vbSessionsResult=errset(maeGetSessions() nil)
+    unless(vbSessionsResult return(list("failed" "maeGetSessions failed.")))
+    vbSessions=car(vbSessionsResult))
+  return(list("ok" if(vbSessions then t else nil)))
 )''', timeout=timeout))
+    if (len(result) == 2 and result[0] == "failed"
+            and isinstance(result[1], str)):
+        raise RuntimeError(result[1])
     if len(result) != 2 or result[0] != "ok" or result[1] not in {True, None}:
         raise RuntimeError("Malformed Maestro session probe result.")
     return result[1] is True
@@ -328,6 +335,157 @@ def _decode(result) -> list:
     return value
 
 
+def _resolve_ciw_target(
+    owner: VirtuosoClient,
+    target: SOSCellViewTarget,
+    timeout: float,
+    *,
+    required_action: str = "status",
+) -> SOSCellViewTarget:
+    """Resolve one cellview in CIW without invoking an SOS command."""
+    resolved = _decode(owner.execute_skill(
+        _skill(target, required_action=required_action), timeout=timeout,
+    ))
+    if resolved[0] != "ok":
+        if len(resolved) != 2 or not isinstance(resolved[1], str):
+            raise RuntimeError("Malformed cellview resolution error.")
+        raise _ObjectUnavailable(resolved[1])
+    if len(resolved) != 5 or (resolved[4] is not None and resolved[4] is not True):
+        raise RuntimeError("Malformed cellview resolution result.")
+    directory, master = (_absolute_path(value) for value in resolved[1:3])
+    if master == directory or posixpath.commonpath([directory, master]) != directory:
+        raise RuntimeError("Resolved master file is outside the cellview directory.")
+    if resolved[3] is not None and not isinstance(resolved[3], str):
+        raise RuntimeError("Malformed cellview type.")
+    return replace(
+        target,
+        directory=directory,
+        master=master,
+        view_type=resolved[3] or "",
+        unsaved=(resolved[4] is True) if resolved[3] in _OA_TYPES else None,
+    )
+
+
+_NOBJSTATUS_ATTRIBUTES = (
+    "-gaRevision", "-gaCurrentVer", "-gaModified", "-gaCiModified", "-gaOutOfDate",
+    "-gaReference",
+)
+
+
+def _parse_nobjstatus_record(output: str) -> tuple[str, str, str, dict[str, str]]:
+    """Parse one length-prefixed SOS nobjstatus record without interpreting it."""
+    payload = output.encode("utf-8")
+    offset = 0
+
+    def read_line(label: str) -> bytes:
+        nonlocal offset
+        end = payload.find(b"\n", offset)
+        if end < 0:
+            raise RuntimeError(f"Malformed SOS nobjstatus output: missing {label}.")
+        value = payload[offset:end]
+        offset = end + 1
+        return value[:-1] if value.endswith(b"\r") else value
+
+    header = read_line("header")
+    match = re.fullmatch(br"!nObjStatus! ([0-9]+)", header)
+    if match is None or int(match.group(1)) != 1:
+        raise RuntimeError("SOS nobjstatus must return exactly one record.")
+    if read_line("record marker") != b"!Record!":
+        raise RuntimeError("Malformed SOS nobjstatus record marker.")
+
+    path = read_line("object path").decode("utf-8", "strict")
+    status_code = read_line("status code").decode("ascii", "strict")
+    type_code = read_line("object type").decode("ascii", "strict")
+
+    attributes: dict[str, str] = {}
+    while offset < len(payload):
+        if payload[offset:].strip(b"\r\n") == b"":
+            break
+        key = read_line("attribute name").decode("utf-8", "strict")
+        length_text = read_line("attribute length")
+        if not re.fullmatch(br"[0-9]+", length_text):
+            raise RuntimeError("Malformed SOS nobjstatus attribute length.")
+        length = int(length_text)
+        end = offset + length
+        if end > len(payload):
+            raise RuntimeError("Truncated SOS nobjstatus attribute value.")
+        value = payload[offset:end].decode("utf-8", "strict")
+        offset = end
+        if length == 0:
+            pass
+        elif payload[offset:offset + 2] == b"\r\n":
+            offset += 2
+        elif payload[offset:offset + 1] == b"\n":
+            offset += 1
+        else:
+            raise RuntimeError("Malformed SOS nobjstatus attribute terminator.")
+        if not key or key in attributes:
+            raise RuntimeError("Duplicate or empty SOS nobjstatus attribute.")
+        attributes[key] = value
+
+    return path, status_code, type_code, attributes
+
+
+def _parse_nobjstatus(output: str, target: SOSCellViewTarget) -> SOSCellViewState:
+    """Parse one length-prefixed, server-queried SOS nobjstatus record."""
+    path, status_code, type_code, attributes = _parse_nobjstatus_record(output)
+    if path not in {target.path, "./" + target.path}:
+        raise RuntimeError("SOS nobjstatus returned a different object path.")
+
+    object_types = {"1": "f", "2": "d", "3": "p"}
+    object_type = object_types.get(type_code)
+    if object_type is None:
+        raise RuntimeError(f"Unsupported SOS nobjstatus object type: {type_code!r}.")
+    if status_code in {"0", "1"}:
+        raise _ObjectUnavailable("SOS nobjstatus reports that the target is unavailable.")
+    if status_code == "2":
+        return SOSCellViewState(object_type, "?", "?", "?", "?", "?", "?")
+    state_and_lock = {
+        "3": ("O", "-"),
+        "4": ("-", "L"),
+        "5": ("-", "-"),
+        "6": ("O", "?"),
+    }
+    if status_code not in state_and_lock:
+        raise RuntimeError(f"Unsupported SOS nobjstatus state: {status_code!r}.")
+
+    flags = {}
+    for name in ("Modified", "OutOfDate"):
+        value = attributes.get(name)
+        if value not in {"0", "1"}:
+            raise RuntimeError(f"SOS nobjstatus is missing a valid {name} flag.")
+        flags[name] = value
+    ci_modified = attributes.get("CiModified", "0")
+    if ci_modified not in {"0", "1"}:
+        raise RuntimeError("SOS nobjstatus returned an invalid CiModified flag.")
+    flags["CiModified"] = ci_modified
+    if "Reference" not in attributes:
+        raise RuntimeError("SOS nobjstatus is missing the Reference attribute.")
+    revision = attributes.get("Revision") or attributes.get("CurrentVer")
+    current = attributes.get("CurrentVer")
+    if (not revision or any(char in revision for char in "\x00\r\n\t")
+            or (current and current != revision)):
+        raise RuntimeError("SOS nobjstatus returned an invalid or inconsistent revision.")
+
+    state, lock = state_and_lock[status_code]
+    change = "M" if flags["Modified"] == "1" or flags["CiModified"] == "1" else "-"
+    newer = "N" if flags["OutOfDate"] == "1" else "-"
+    rso = "R" if attributes["Reference"] else "-"
+    return SOSCellViewState(object_type, state, change, lock, newer, rso, revision)
+
+
+def _read_nobj_state(
+    area: SOSWorkarea, target: SOSCellViewTarget, timeout: float,
+) -> SOSCellViewState:
+    result = area._run(
+        "nobjstatus", *_NOBJSTATUS_ATTRIBUTES, "./" + target.path, timeout=timeout,
+    )
+    if result.returncode:
+        raise RuntimeError(
+            result.stderr.strip() or result.stdout.strip() or "SOS nobjstatus failed."
+        )
+    return _parse_nobjstatus(result.stdout, target)
+
 def _read_state(area: SOSWorkarea, target: SOSCellViewTarget, timeout: float, *,
                 include_unmanaged: bool = False) -> SOSCellViewState:
     # Selection filters imply recursion in SOS unless -sNr explicitly disables it.
@@ -335,7 +493,13 @@ def _read_state(area: SOSWorkarea, target: SOSCellViewTarget, timeout: float, *,
     result = area._run("status", "-Nhdr", "-f" + _STATUS_FORMAT,
                        *selection, "./" + target.path, timeout=timeout)
     if result.returncode:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "SOS status failed.")
+        detail = result.stderr.strip() or result.stdout.strip() or "SOS status failed."
+        try:
+            return _read_nobj_state(area, target, timeout)
+        except Exception as exc:
+            raise RuntimeError(
+                f"{detail}; server-queried nobjstatus fallback failed: {exc}"
+            ) from exc
     lines = [
         line for line in result.stdout.splitlines()
         if line.strip() and line.strip() not in _STATUS_NOTICES
@@ -381,7 +545,19 @@ def _precondition(action: str, state: SOSCellViewState):
                 "cannot be registered; use the normal checkout/checkin workflow for managed views."
             )
         return None
-    if state.object_type != "p" or state.revision == "?":
+    if action == "cancel_co":
+        if state.object_type != "p" or state.revision == "?":
+            return "blocked", "Target must be an existing managed SOS package."
+        if state.rso != "-":
+            return "blocked", "Reference or ambiguous SOS objects cannot be mutated."
+        if state.lock != "-":
+            return "blocked", "Target is locked in another workarea, or lock status is unavailable."
+        if state.state == "-" and state.change == "-":
+            return "noop", "Target is already checked in; no checkout was released."
+        if state.state != "O" or state.change != "-":
+            return "blocked", "Cancel checkout requires this workarea's checkout to be saved and unmodified."
+        return None
+    if state.object_type != "p" or state.revision == "?" or state.rso != "-":
         return "blocked", "Target must be an existing managed SOS package, not a reference or unmanaged object."
     if state.lock != "-":
         return "blocked", "Target is locked in another workarea, or lock status is unavailable."
@@ -401,10 +577,14 @@ def _precondition(action: str, state: SOSCellViewState):
 
 
 def _verified(action: str, before: SOSCellViewState, after: SOSCellViewState) -> bool:
-    if after.object_type != "p" or after.lock != "-" or after.revision == "?":
+    if (after.object_type != "p" or after.lock != "-" or after.rso != "-"
+            or after.revision == "?"):
         return False
     if action == "co":
         return after.state == "O" and after.change in {"-", "M"}
+    if action == "cancel_co":
+        return (after.state == "-" and after.change == "-"
+                and after.revision == before.revision)
     if action == "register":
         return (after.state == "-" and after.change == "-"
                 and after.newer == "-" and after.rso == "-"
@@ -454,7 +634,7 @@ def operate_cellview(
 ) -> SOSCellViewResult:
     """Perform one GDM action at most once; report uncertain outcomes explicitly."""
     target = SOSCellViewTarget(*(_text(v, name) for v, name in ((lib, "lib"), (cell, "cell"), (view, "view"))))
-    if action not in {"status", "co", "ci", "register"}:
+    if action not in {"status", "co", "cancel_co", "ci", "register"}:
         raise ValueError(f"Unsupported SOS cellview action: {action}")
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive.")
@@ -467,44 +647,36 @@ def operate_cellview(
     def report(outcome: Outcome, *diagnostics: str) -> SOSCellViewResult:
         return SOSCellViewResult(action, outcome, target, before, after, tuple(diagnostics))
 
-    if action in {"ci", "register"} and _is_calibre_target(lib, cell, view):
-        return report("blocked", "Calibre-related targets cannot be checked in through this API.")
+    if action in {"cancel_co", "ci", "register"} and _is_calibre_target(lib, cell, view):
+        return report("blocked", "Calibre-related targets cannot be mutated through this API.")
 
     try:
         if sos_runner(owner) is None:
             return report("blocked", "SOS requires a GUI-host SSH runner or an explicitly local POSIX client; plain TCP/native Windows local is unsupported.")
-        resolved = _decode(owner.execute_skill(_skill(target, required_action=action), timeout=timeout))
-        if resolved[0] != "ok":
-            if len(resolved) != 2 or not isinstance(resolved[1], str):
-                raise RuntimeError("Malformed cellview resolution error.")
-            return report(resolved[0], resolved[1])
-        if len(resolved) != 5 or (resolved[4] is not None and resolved[4] is not True):
-            raise RuntimeError("Malformed cellview resolution result.")
-        directory, master = (_absolute_path(v) for v in resolved[1:3])
-        if master == directory or posixpath.commonpath([directory, master]) != directory:
-            raise RuntimeError("Resolved master file is outside the cellview directory.")
-        if resolved[3] is not None and not isinstance(resolved[3], str):
-            raise RuntimeError("Malformed cellview type.")
-        target = replace(target, directory=directory, master=master,
-                         view_type=resolved[3] or "",
-                         unsaved=(resolved[4] is True) if resolved[3] in _OA_TYPES else None)
-        if action in {"ci", "register"} and _is_calibre_target(directory, master):
-            return report("blocked", "Resolved path belongs to a Calibre-related target; checkin is prohibited.")
+        target = _resolve_ciw_target(owner, target, timeout, required_action=action)
+        if action in {"cancel_co", "ci", "register"} and _is_calibre_target(
+            target.directory, target.master,
+        ):
+            return report("blocked", "Resolved path belongs to a Calibre-related target; mutation is prohibited.")
         if action == "register":
             decision = _target_precondition(target)
             if decision:
                 return report(*decision)
         executable = resolve_soscmd(owner, soscmd, timeout=timeout)
-        probe = SOSWorkarea(owner, directory, soscmd=executable)
+        probe = SOSWorkarea(owner, target.directory, soscmd=executable)
         found = probe._run("findwaroot", timeout=timeout)
         if found.returncode:
             raise RuntimeError(found.stderr.strip() or found.stdout.strip() or "SOS workarea not found.")
         workarea = _absolute_path(found.stdout.strip())
-        if directory == workarea or posixpath.commonpath([directory, workarea]) != workarea:
+        if (target.directory == workarea
+                or posixpath.commonpath([target.directory, workarea]) != workarea):
             raise RuntimeError("Resolved cellview is outside the returned SOS workarea.")
-        target = replace(target, workarea=workarea, path=posixpath.relpath(directory, workarea))
+        target = replace(
+            target, workarea=workarea,
+            path=posixpath.relpath(target.directory, workarea),
+        )
         area = SOSWorkarea(owner, workarea, soscmd=executable)
-        if action in {"co", "ci"}:
+        if action in {"co", "cancel_co", "ci"}:
             decision = _target_precondition(target)
             if decision:
                 return report(*decision)
@@ -516,7 +688,24 @@ def operate_cellview(
         if decision:
             return report(*decision)
         if dry_run:
-            return report("dry_run", "Preconditions passed; no checkout/checkin was executed.")
+            return report("dry_run", "Preconditions passed; no SOS mutation was executed.")
+        if action == "cancel_co":
+            # Re-resolve the cellview and refresh SOS immediately before the one-shot discard.
+            refreshed_target = _decode(owner.execute_skill(
+                _skill(target, required_action="cancel_co"), timeout=timeout,
+            ))
+            if refreshed_target != [
+                "ok", target.directory, target.master, target.view_type, None,
+            ]:
+                return report(
+                    "blocked",
+                    "Target identity or connected-CIW save state changed before cancel checkout.",
+                )
+            refreshed_state = _read_state(area, target, timeout)
+            if refreshed_state != before:
+                return report(
+                    "blocked", "SOS state changed before cancel checkout; inspect status first.",
+                )
         if action == "register":
             # A previous dry-run is not authorization to treat a now-managed object
             # as new. Refresh once immediately before sending the one-shot GDM call.
@@ -535,6 +724,38 @@ def operate_cellview(
         return report("blocked", str(exc))
     except Exception as exc:
         return report("failed", str(exc))
+
+    if action == "cancel_co":
+        diagnostics = []
+        discard_reply = None
+        try:
+            discard_reply = area._run("discardco", "./" + target.path, timeout=timeout)
+        except Exception as exc:
+            diagnostics.append(f"SOS discardco result unavailable: {exc}")
+        try:
+            after = _read_state(area, target, timeout)
+        except Exception as exc:
+            diagnostics.append(f"Post-operation SOS status unavailable: {exc}")
+        if discard_reply is None:
+            if after is not None and _verified(action, before, after):
+                diagnostics.append(
+                    "SOS now shows the intended state, but the discardco result was not confirmed."
+                )
+            return report("unknown", *diagnostics,
+                          "Do not retry automatically; inspect SOS status first.")
+        detail = discard_reply.stderr.strip() or discard_reply.stdout.strip()
+        if discard_reply.returncode:
+            if after is not None and _verified(action, before, after):
+                diagnostics.insert(0, detail or "SOS discardco returned a nonzero status.")
+                return report("unknown", *diagnostics,
+                              "Do not retry automatically; inspect SOS status first.")
+            return report("failed", detail or "SOS discardco failed.", *diagnostics)
+        if after is None:
+            return report("unknown", *diagnostics,
+                          "SOS discardco succeeded but post-operation status is unavailable.")
+        if not _verified(action, before, after):
+            return report("failed", "SOS discardco succeeded but its postcondition did not match.")
+        return report("success")
 
     # From here, an incomplete response may mean a completed server-side write.
     # Only SSH status reads are allowed after ambiguity; never resend GDM.
