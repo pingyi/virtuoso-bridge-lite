@@ -5,7 +5,6 @@ import sys
 import socket
 import os
 import json
-import signal
 import threading
 import time
 import errno
@@ -16,19 +15,36 @@ import tempfile
 import traceback
 
 try:
+    from ramic_owner import OwnerProcess, start_pipe_monitor
+except ImportError:
+    from virtuoso_bridge.virtuoso.basic.resources.ramic_owner import OwnerProcess, start_pipe_monitor
+
+try:
     from ramic_request_recovery import (
+        DeferredFiles,
         ExecutionUncertain,
+        REPLY_TAG_PREFIX,
         RecoverableRequestManager,
         RequestNotStarted,
+        frame_tag,
+        new_reply_tag,
         read_response_frame,
+        resynchronize,
+        strip_reply_tag,
         valid_request_id,
     )
 except ImportError:
     from virtuoso_bridge.virtuoso.basic.resources.ramic_request_recovery import (
+        DeferredFiles,
         ExecutionUncertain,
+        REPLY_TAG_PREFIX,
         RecoverableRequestManager,
         RequestNotStarted,
+        frame_tag,
+        new_reply_tag,
         read_response_frame,
+        resynchronize,
+        strip_reply_tag,
         valid_request_id,
     )
 
@@ -246,8 +262,10 @@ def _auth_error(request_data, kind):
     (regular SKILL execution).  The MAC covers the complete request for its
     kind, so no field can be tampered with in flight.
     """
+    if kind == "req" and _INSTANCE_LEASE is not None:
+        return "AuthError: registered daemon requires instance-bound execution; update the client"
     if not BRIDGE_TOKEN:
-        if kind == "recoverable":
+        if kind in ("recoverable", "bound"):
             return "AuthError: recoverable requests require bridge token authentication"
         return None
     nonce = request_data.get("nonce")
@@ -302,16 +320,26 @@ def _auth_error(request_data, kind):
         skill = request_data.get("skill")
         if not isinstance(skill, basestring):
             return "AuthError: invalid skill field"
-        expected = _mac_hex(
-            _REQ_DOMAIN, str(proto), nonce, "%.6f" % timeout, skill
-        )
+        if kind == "bound":
+            instance = request_data.get("daemon_instance")
+            if not isinstance(instance, basestring) or not _is_hex_token(instance, 32, 32):
+                return "AuthError: invalid daemon_instance field"
+            expected = _mac_hex(
+                "vb1-execute", str(proto), nonce, instance, "%.6f" % timeout, skill
+            )
+        else:
+            expected = _mac_hex(
+                _REQ_DOMAIN, str(proto), nonce, "%.6f" % timeout, skill
+            )
         ttl = timeout
     if not _compare_digest(expected, str(mac).lower()):
         return (
             "AuthError: bridge token mismatch - the daemon on this port "
-            "belongs to a different user (or the token was rotated); run "
-            "`virtuoso-bridge restart` after RBStop()"
+            "belongs to a different user (or the token was rotated); verify "
+            "the intended account and endpoint before changing credentials or restarting"
         )
+    if kind == "bound" and request_data["daemon_instance"] != _RECOVERY.instance_id:
+        return "AuthError: daemon_instance mismatch; request was not executed"
     with _NONCE_LOCK:
         verdict = _consume_nonce(nonce, ttl)
     if verdict == "replay":
@@ -336,10 +364,15 @@ def _capabilities_body():
             "proto": _PROTO,
             "auth": "on" if BRIDGE_TOKEN else "off",
             "daemon": "ramic-bridge",
+            "build": "instance-discovery-3",
             "virtuoso_pid": virtuoso_pid,
+            "instance_record": _INSTANCE_LEASE.metadata if _INSTANCE_LEASE else None,
             "recoverable_requests": 1 if BRIDGE_TOKEN else 0,
+            "instance_bound_requests": 1 if BRIDGE_TOKEN else 0,
+            "reply_tags": 1 if _REPLY_TAGS else 0,
             "daemon_instance": _RECOVERY.instance_id,
             "server_time_ms": int(time.time() * 1000),
+            "lane": _RECOVERY.lane_state(),
         }
     )
 
@@ -397,14 +430,21 @@ except ImportError:
 # Command line arguments for host and port
 HOST = sys.argv[1]
 PORT = int(sys.argv[2])
+_INSTANCE_LEASE = None
 
 # Global timeout control flag
 timeout_flag = False
 
 # Get Virtuoso's PID - this is the process we need to send signals to.
-# psutil -> /proc -> getppid: degrade gracefully instead of dying at import
-# time on kernels without /proc.
+# psutil -> /proc -> getppid: diagnostic PID inference only. Signals require
+# verified ownership; kernels without /proc must still boot.
 def _resolve_virtuoso_pid():
+    owner = os.environ.get("RB_VIRTUOSO_PID")
+    if owner is not None:
+        pid = int(owner)
+        if pid <= 1:
+            raise ValueError("RB_VIRTUOSO_PID must identify a Virtuoso process")
+        return pid, "explicit"
     if PSUTIL_AVAILABLE and psutil is not None:
         try:
             parent_process = psutil.Process().parent()
@@ -426,10 +466,12 @@ def _resolve_virtuoso_pid():
 
 
 virtuoso_pid, _pid_source = _resolve_virtuoso_pid()
+_owner = (OwnerProcess(virtuoso_pid, os.environ.get("RB_VIRTUOSO_BOOT_ID"))
+          if _pid_source == "explicit" else None)
 if _pid_source == "getppid":
     sys.stderr.write(
-        "[RB-pid] WARNING: no /proc and no psutil; watchdog falls back to "
-        "the direct parent PID {0} (timeout interrupts may be imprecise)\n".format(
+        "[RB-pid] WARNING: no /proc and no psutil; diagnostic PID falls back to "
+        "the direct parent PID {0}; unverified timeout signals are disabled\n".format(
             virtuoso_pid
         )
     )
@@ -450,6 +492,9 @@ stdout_fl = _fcntl_or_die(stdout_fd, _f_getfl)
 _fcntl_or_die(stdout_fd, _f_setfl, stdout_fl & ~_o_nonblock)  # Ensure blocking
 
 _RECOVERY = RecoverableRequestManager()
+# Set by a CIW handler that echoes reply tags (ramic_bridge.il); a daemon
+# started by an older handler keeps untagged, in-order replies.
+_REPLY_TAGS = os.environ.get("RB_REPLY_TAGS") == "1"
 
 
 def _safe_sendall(conn, data):
@@ -472,15 +517,14 @@ def _safe_close_connection(conn):
 
 def watchdog_callback(expired, finished, completion_lock):
     # Timer.cancel() cannot stop a callback that already started. Keep the
-    # decision and signal inside the same lock used before releasing the lane.
+    # decision inside the same lock used before releasing the lane. The
+    # request is not interrupted: SIGINT cannot dismiss a modal dialog and
+    # only made the lane unusable. The reader gives up instead, the lane is
+    # poisoned and resynchronized once Virtuoso answers again.
     with completion_lock:
         if finished.is_set() or expired.is_set():
             return
         expired.set()
-        try:
-            os.kill(virtuoso_pid, signal.SIGINT)
-        except Exception:
-            pass
 
 def read_until_delimiter(start_ok=b'\x02', start_err=b'\x15', end=b'\x1e'):
     """Read data from Virtuoso's stdout until specific delimiters are found."""
@@ -582,7 +626,23 @@ def _send_recovery_reply(conn, request_nonce, payload):
     _safe_sendall(conn, _signed_response(request_nonce, "\x02" + body))
 
 
-def _prepare_skill(skill_code):
+# Multi-line code is loaded from a temp file because the IPC channel is
+# line-buffered. An error raised inside a loaded file reaches the caller only
+# as load's own "error while loading file ... at line N"; the real message is
+# printed to the CIW alone. So the file runs the code under errset, and the
+# command re-raises the captured error after load() returns, outside the file.
+_MULTILINE_PREFIX = "_vb_eval_ok = errset(progn(\n"
+_MULTILINE_SUFFIX = "\n) t)\n_vb_eval_err = unless(_vb_eval_ok errset.errset)\n"
+_MULTILINE_RESULT = (
+    'if(_vb_eval_err then let((m) m = nth(4 _vb_eval_err) '
+    'error("%s" if(and(m stringp(car(m))) '
+    'strcat(if(substring(car(m) 1 8) == "*Error* " substring(car(m) 9) car(m)) '
+    'if(cdr(m) strcat(" - " buildString(mapcar(lambda((x) sprintf(nil "%L" x)) cdr(m)) " ")) "")) '
+    'sprintf(nil "%L" _vb_eval_err)))) else car(_vb_eval_ok))'
+)
+
+
+def _prepare_skill(skill_code, tag=None):
     if isinstance(skill_code, unicode):
         skill_code = skill_code.encode("utf-8")
     tmp_il_path = None
@@ -590,11 +650,16 @@ def _prepare_skill(skill_code):
         if "\n" in skill_code:
             fd, tmp_il_path = tempfile.mkstemp(suffix=".il", prefix="vb_eval_")
             with os.fdopen(fd, "wb") as handle:
-                handle.write("_vb_eval_result = progn(\n" + skill_code + "\n)\n")
+                handle.write(_MULTILINE_PREFIX + skill_code + _MULTILINE_SUFFIX)
             escaped_path = tmp_il_path.replace("\\", "/")
-            send_code = 'load("%s") hiFlush() _vb_eval_result\n' % escaped_path
+            send_code = (
+                '_vb_eval_ok = _vb_eval_err = nil load("%s") hiFlush() %s\n'
+                % (escaped_path, _MULTILINE_RESULT)
+            )
         else:
-            send_code = 'let(((__vb_r ' + skill_code + ')) hiFlush() __vb_r)\n'
+            send_code = 'let(((__vb_r progn(' + skill_code + '))) hiFlush() __vb_r)\n'
+        if tag is not None:
+            send_code = REPLY_TAG_PREFIX + str(tag) + " " + send_code
         return send_code, tmp_il_path
     except Exception as exc:
         if tmp_il_path:
@@ -605,12 +670,20 @@ def _prepare_skill(skill_code):
         raise RequestNotStarted("could not prepare SKILL request: %s" % exc)
 
 
+# Temp files of requests whose reply was never read; Virtuoso may still
+# load() them once the CIW is unblocked.
+_DEFERRED_FILES = DeferredFiles()
+
+
 def _transmit_and_read(skill_code, watchdog_seconds=None):
-    send_bytes, tmp_il_path = _prepare_skill(skill_code)
+    tag = new_reply_tag() if _REPLY_TAGS else None
+    send_bytes, tmp_il_path = _prepare_skill(skill_code, tag)
     timer = None
     expired = None
     finished = None
     completion_lock = None
+    transmitted = False
+    answered = False
     try:
         try:
             written = sys.stdout.write(send_bytes)
@@ -625,6 +698,7 @@ def _transmit_and_read(skill_code, watchdog_seconds=None):
             raise
         except Exception as exc:
             raise ExecutionUncertain("SKILL transmission failed: %s" % exc)
+        transmitted = True
 
         if watchdog_seconds is not None:
             expired = threading.Event()
@@ -640,17 +714,27 @@ def _transmit_and_read(skill_code, watchdog_seconds=None):
         def read_one():
             if expired is not None and expired.is_set():
                 raise ExecutionUncertain(
-                    "legacy watchdog fired; IPC lane is poisoned"
+                    "SKILL did not answer within the request timeout"
                 )
             return sys.stdin.read(1)
 
-        response = read_response_frame(read_one)
+        while True:
+            response = read_response_frame(read_one)
+            if tag is None:
+                break
+            untagged = strip_reply_tag(response, tag)
+            if untagged is not None:
+                response = untagged
+                break
+            # The late reply of an earlier request that was given up on.
+            _DEFERRED_FILES.release(frame_tag(response))
+        answered = True
         if completion_lock is not None:
             with completion_lock:
                 finished.set()
                 if expired.is_set():
                     raise ExecutionUncertain(
-                        "legacy watchdog fired; late response attribution is unsafe"
+                        "SKILL answered just as the request timed out"
                     )
         return response
     finally:
@@ -659,11 +743,38 @@ def _transmit_and_read(skill_code, watchdog_seconds=None):
                 finished.set()
         if timer is not None:
             timer.cancel()
-        if tmp_il_path:
+        if tmp_il_path and transmitted and not answered:
+            _DEFERRED_FILES.add(tmp_il_path, tag)
+        elif tmp_il_path:
             try:
                 os.unlink(tmp_il_path)
             except OSError:
                 pass
+
+
+def _send_resync_probe(probe):
+    send_bytes, _tmp_il_path = _prepare_skill(
+        probe, new_reply_tag() if _REPLY_TAGS else None)
+    sys.stdout.write(send_bytes)
+    sys.stdout.flush()
+
+
+def _resync_lane():
+    def read_one():
+        chunk = sys.stdin.read(1)
+        if chunk:
+            _DEFERRED_FILES.observe(chunk)
+        return chunk
+
+    try:
+        return resynchronize(_send_resync_probe, read_one)
+    finally:
+        # Untagged replies stay in order: the probe is answered after
+        # every earlier load().
+        _DEFERRED_FILES.release_untagged()
+
+
+_RECOVERY.set_resync(_resync_lane)
 
 
 def _execute_recoverable(skill_code):
@@ -739,10 +850,15 @@ def handle_external_connection(conn, addr):
                 reply = _RECOVERY.submit(
                     request_id, request_data["skill"], _execute_recoverable
                 )
+                # A client may let the reply wait briefly for a quick result.
+                wait_ms = request_data.get("wait_ms")
+                if (reply.get("state") == "running" and isinstance(wait_ms, int)
+                        and not isinstance(wait_ms, bool) and wait_ms > 0):
+                    reply = _RECOVERY.wait(request_id, wait_ms / 1000.0)
             _send_recovery_reply(conn, request_nonce, reply)
             return
 
-        auth_error = _auth_error(request_data, "req")
+        auth_error = _auth_error(request_data, "bound" if request_data.get("op") == "execute" else "req")
         if auth_error:
             # Unauthenticated or foreign client: refuse without executing.
             if isinstance(auth_error, unicode):
@@ -814,6 +930,7 @@ def _connection_thread(conn, addr, slots):
         slots.release()
 
 def start_server():
+    global PORT, _INSTANCE_LEASE
     """Start the TCP server to accept client connections."""
     # Python 2.7 compatibility: don't use context manager for socket
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -824,16 +941,30 @@ def start_server():
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
         # Try to bind with error handling for port conflicts
-        try:
-            s.bind((HOST, PORT))
-        except socket.error as e:
-            if e.errno == errno.EADDRINUSE:
-                sys.stderr.write("ERROR: Port {0} is already in use. Another daemon may be running.\n".format(PORT))
-                sys.exit(1)
-            else:
+        if PORT == 0 or os.environ.get("RB_AUTO_PORT") == "1":
+            try:
+                from ramic_registry import bind_instance
+            except ImportError:
+                from virtuoso_bridge.virtuoso.basic.resources.ramic_registry import bind_instance
+            try:
+                _INSTANCE_LEASE = bind_instance(
+                    s, HOST, PORT, pid=virtuoso_pid, backlog=_MAX_CONNECTIONS,
+                    work_dir=os.environ.get("RB_VIRTUOSO_WORK_DIR") or os.getcwd())
+            except socket.error as exc:
+                if exc.errno == errno.EADDRINUSE:
+                    sys.stderr.write("ERROR: Requested port is already in use; clear the explicit fixed-port request or choose a free port.\n")
+                    raise SystemExit(1)
                 raise
-
-        s.listen(_MAX_CONNECTIONS)
+            PORT = _INSTANCE_LEASE.metadata["port"]
+        else:
+            try:
+                s.bind((HOST, PORT))
+            except socket.error as exc:
+                if exc.errno == errno.EADDRINUSE:
+                    sys.stderr.write("ERROR: Port %s is already in use. Leave the existing session running; load the automatic bootstrap or use RBSetPort(port).\n" % PORT)
+                    raise SystemExit(1)
+                raise
+            s.listen(_MAX_CONNECTIONS)
         # Banner -- SKILL side parses this from stderr to populate
         # RBLastPid / RBLastBind / RBLastHost / RBLastIP for the monitor
         # display.  Format is frozen:
@@ -862,6 +993,7 @@ def start_server():
             )
         )
         sys.stderr.flush()
+        start_pipe_monitor(stdin_fd)
         slots = threading.BoundedSemaphore(_MAX_CONNECTIONS)
         while True:
             conn, addr = s.accept()
@@ -886,4 +1018,6 @@ def start_server():
 
 # Start the server
 if __name__ == "__main__":
+    if _owner is not None:
+        _owner.start_monitor()
     start_server()

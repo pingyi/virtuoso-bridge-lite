@@ -15,17 +15,25 @@ RBPython = if(getShellEnvVar("RB_PYTHON_PATH") then
             else
                 "python"
             )
-RBPort = if(getShellEnvVar("RB_PORT") then
+RBConfiguredPort = if(getShellEnvVar("RB_PORT") then
                 atoi(getShellEnvVar("RB_PORT"))
             else
-                65432
+                0
             )                                                                      ; TCP port for client connections
+; Reloading configuration must not erase the port of a live daemon.
+unless(boundp('RBPort) && boundp('RBIpc) && RBIpc && RBIpc != 'unbound
+        && ipcIsAliveProcess(RBIpc)
+    RBPort = RBConfiguredPort)
+when(RBConfiguredPort == 0 setShellEnvVar("RB_AUTO_PORT" "1"))
 RBIdentityPath = if(getShellEnvVar("RB_IDENTITY_PATH") then
                 getShellEnvVar("RB_IDENTITY_PATH")
             else
                 ""
             )
-RBLocal = nil                                                                      ; Local-only connections (127.0.0.1 vs 0.0.0.0)
+; Listen on 127.0.0.1: SSH tunnels and local mode both reach the daemon
+; through loopback. RB_LISTEN_ALL=1 (VB_DAEMON_LISTEN_ALL in .env) binds
+; 0.0.0.0 for clients that connect over the network.
+RBLocal = getShellEnvVar("RB_LISTEN_ALL") != "1"
 RBEcho = nil                                                                     ; Echo bridging messages for debugging
 ; Read IPC logging settings from the Virtuoso process environment at load time.
 ; Only "1" enables logging; a configured path alone does not enable it.
@@ -46,6 +54,11 @@ unless(boundp('RBStderrBuf) RBStderrBuf = "")
 ; by Refresh / Finish / Stop so post-mortem messages keep showing
 ; pid/host/port even after the IPC handle has been freed.
 unless(boundp('RBLastPid) RBLastPid = nil)
+; When the current daemon was launched. Its banner is read by an IPC handler
+; that only runs once Virtuoso is idle, so a daemon launched moments ago has
+; no RBLastPid yet; .cdsinit and -restore can load this file back to back.
+unless(boundp('RBLaunchedAt) RBLaunchedAt = nil)
+RBStartGraceSeconds = 30
 unless(boundp('RBLastBind) RBLastBind = "")
 unless(boundp('RBLastHost) RBLastHost = "")
 unless(boundp('RBLastIP) RBLastIP = "")
@@ -84,15 +97,24 @@ procedure(RBIpcDataHandler(ipcId data)
   ; the first form take effect.  The progn wrap is a no-op for
   ; single-form input and returns the last form's value for multi-form
   ; input, matching what every Python caller already expects.
-  let((result)
+  ;
+  ; A daemon started with RB_REPLY_TAGS=1 sends "vbtag:<16 hex> <code>" and
+  ; the tag is echoed right after the status marker.  The daemon then drops
+  ; any reply that is not its request's own (such as the late reply of a
+  ; request it gave up on) instead of taking it for the next request's.
+  let((result tag)
+    when(and(stringp(data) greaterp(strlen(data) 23)
+             equal(substring(data 1 6) "vbtag:"))
+        tag = substring(data 7 16)
+        data = substring(data 24))
     when(RBEcho printf("[RAMIC Bridge (%L)] receive:%L\n" ipcId data))
     if(errset(result=evalstring(strcat("(progn " data ")"))) then
-	    ; Success: Send response with STX (0x02) start marker and RS (0x1E) end marker
-	    ipcWriteProcess(ipcId sprintf(nil "%c%L%c" intToChar(2) result intToChar(30)))
-		when(RBEcho printf("[RAMIC Bridge (%L)] return:%L\n" ipcId result))
-	else
+        ; Success: Send response with STX (0x02) start marker and RS (0x1E) end marker
+        ipcWriteProcess(ipcId sprintf(nil "%c%s%L%c" intToChar(2) or(tag "") result intToChar(30)))
+        when(RBEcho printf("[RAMIC Bridge (%L)] return:%L\n" ipcId result))
+    else
         ; Error: NAK + payload to Python only (no CIW printf; client parses errors)
-        ipcWriteProcess(ipcId sprintf(nil "%c%L%c" intToChar(21) errset.errset intToChar(30)))
+        ipcWriteProcess(ipcId sprintf(nil "%c%s%L%c" intToChar(21) or(tag "") errset.errset intToChar(30)))
     )
   )
 )
@@ -138,7 +160,15 @@ procedure(RBIpcErrHandler(ipcId data)
                 when(strlen(tok) > 4 && equal(substring(tok 1 4) "pid=")
                     RBLastPid = atoi(substring(tok 5)))
                 when(strlen(tok) > 5 && equal(substring(tok 1 5) "bind=")
-                    RBLastBind = substring(tok 6))
+                    let((parts candidate parsed)
+                        parts = parseString(substring(tok 6) ":")
+                        when(length(parts) == 2
+                            candidate = cadr(parts)
+                            parsed = atoi(candidate t)
+                            when(integerp(parsed) && parsed > 0 && parsed <= 65535 &&
+                                 equal(candidate sprintf(nil "%d" parsed))
+                                RBLastBind = substring(tok 6)
+                                RBPort = parsed))))
                 when(strlen(tok) > 5 && equal(substring(tok 1 5) "host=")
                     RBLastHost = substring(tok 6))
                 when(strlen(tok) > 3 && equal(substring(tok 1 3) "ip=")
@@ -186,6 +216,17 @@ procedure(RBQuoteShellArg(value)
         strcat(quoted "'"))
 )
 
+procedure(RBOwnerBootId()
+    ; Read in Virtuoso, not in the shell spawned by ipcBeginProcess: that
+    ; shell can run on a different host. Unknown boots disable local checks.
+    let((port value)
+        port = infile("/proc/sys/kernel/random/boot_id")
+        when(port
+            gets(value port)
+            close(port))
+        if(value car(parseString(value)) ""))
+)
+
 procedure(RBStart()
     ; Start the RAMIC Bridge daemon process.  Launches the Python daemon
     ; as a child process of Virtuoso; the actual "ready" ack is printed
@@ -202,6 +243,8 @@ procedure(RBStart()
     ; state so we don't loop forever printing "already running" against
     ; a dead daemon.
     when(boundp('RBIpc) && ipcIsAliveProcess(RBIpc) && !RBLastPid
+            && !(stringp(RBLaunchedAt)
+                 && compareTime(getCurrentTime() RBLaunchedAt) < RBStartGraceSeconds)
         printf("[RAMIC Bridge] zombie detected (ipc %L alive, no banner); resetting\n" RBIpc)
         errset(ipcKillProcess(RBIpc))
         RBIpc = 'unbound
@@ -212,12 +255,15 @@ procedure(RBStart()
         RBStatErrors = 0
         RBStatUptime = 0)
 
-    if(boundp('RBIpc) && ipcIsAliveProcess(RBIpc) then
+    if(boundp('RBIpc) && ipcIsAliveProcess(RBIpc) && !RBLastPid then
+        printf("[RAMIC Bridge ipc=%L] already starting (launched at %s); not launching a second daemon\n"
+            RBIpc RBLaunchedAt)
+    else if(boundp('RBIpc) && ipcIsAliveProcess(RBIpc) then
         printf("[RAMIC Bridge ipc=%L pid=%L running_bind=%s] already running; load() does not replace a running daemon; current config port=%d\n"
             RBIpc RBLastPid
             if(RBLastBind && strlen(RBLastBind) > 0 RBLastBind "unknown")
             RBPort)
-        printf("[RAMIC Bridge] To switch profile/port: run RBStop() or RBStopAll(), then load setup again.\n")
+        printf("[RAMIC Bridge] To switch profile/port: run RBStop(), then load setup again.\n")
     else
         ; Clear leftover banner state so the new daemon's banner is
         ; recognised as the first-of-its-lifetime by RBIpcErrHandler.
@@ -248,19 +294,21 @@ procedure(RBStart()
             ; Use "env -u" to strip Virtuoso's LD_LIBRARY_PATH / LD_PRELOAD
             ; so the system Python links against its own libs, not Virtuoso's
             ; bundled (and often incompatible) copies.
-            RBIpc = ipcBeginProcess(sprintf(nil "/usr/bin/env -u LD_LIBRARY_PATH -u LD_PRELOAD stdbuf -oL %s -u %L %L %L" RBPython RBDPath host RBPort) "" 'RBIpcDataHandler 'RBIpcErrHandler 'RBIpcFinishHandler logpath)
+            ; Bind the daemon to this Virtuoso, not the intermediate cdsServIpc.
+            RBLaunchedAt = getCurrentTime()
+            RBIpc = ipcBeginProcess(sprintf(nil "/usr/bin/env -u LD_LIBRARY_PATH -u LD_PRELOAD RB_REPLY_TAGS=1 RB_VIRTUOSO_PID=%d RB_VIRTUOSO_BOOT_ID=%s RB_VIRTUOSO_WORK_DIR=%s stdbuf -oL %s %s-u %L %L %L" ipcGetPid() RBQuoteShellArg(RBOwnerBootId()) RBQuoteShellArg(getWorkingDir()) RBPython if(getShellEnvVar("RB_AUTO_PORT") == "1" then "-B " else "") RBDPath host RBConfiguredPort) "" 'RBIpcDataHandler 'RBIpcErrHandler 'RBIpcFinishHandler logpath)
         )
         printf("[RAMIC Bridge ipc=%L] launching daemon (bind=%s:%d) at (%s)\n"
             RBIpc
             if(RBLocal "127.0.0.1" "0.0.0.0")
             RBPort
             getCurrentTime())
-    )
+    ))
 )
 
 procedure(RBStop()
     ; Stop the RAMIC Bridge daemon process
-	if(boundp('RBIpc) && ipcIsAliveProcess(RBIpc) then
+	if(boundp('RBIpc) && RBIpc && RBIpc != 'unbound && ipcIsAliveProcess(RBIpc) then
 		printf("[RAMIC Bridge ipc=%L pid=%L port=%d] stopping\n"
 			RBIpc RBLastPid RBPort)
 		ipcKillProcess(RBIpc)
@@ -269,36 +317,35 @@ procedure(RBStop()
 	)
 )
 
+; Change the port after the current child exits. Use only in an idle CIW.
+procedure(RBSetPort(port)
+    unless(integerp(port) && port >= 0 && port <= 65535
+        error("Port must be 0 (automatic) or 1..65535"))
+    RBStop()
+    RBRequestedPort = port
+    ; A positive port (including monitor-only edits) preserves legacy or
+    ; registered mode. Only choosing zero explicitly opts into registration.
+    when(port == 0 setShellEnvVar("RB_AUTO_PORT" "1"))
+    hiRegTimer("RBApplyPort(50)" 1)
+    t
+)
+
+procedure(RBApplyPort(attempts)
+    if(boundp('RBIpc) && ipcIsAliveProcess(RBIpc) then
+        if(attempts > 0 then
+            hiRegTimer(sprintf(nil "RBApplyPort(%d)" attempts-1) 1)
+        else
+            printf("[RAMIC Bridge] stop timed out; port unchanged\n"))
+    else
+        RBPort = RBRequestedPort
+        RBConfiguredPort = RBRequestedPort
+        RBIpc = 'unbound
+        RBStart())
+)
+
 procedure(RBStopAll()
-    ; Emergency function to kill **the current user's** RAMIC Bridge
-    ; daemon processes only.  Earlier versions used ``pgrep -f`` without
-    ; ``-u``, which scanned every UID on the host and tried to kill
-    ; other users' daemons -- yielding "permission denied" noise and
-    ; (worst case) terminating an unrelated user's bridge if both ran
-    ; under the same account.
-    ;
-    ; 1. Release Virtuoso's IPC bookkeeping for the live handle (if any)
-    ; 2. Match daemon processes belonging to ``$USER`` only, by script
-    ;    filename (ramic_bridge_daemon_[23]).
-    ; 3. SIGTERM, wait 2s, then SIGKILL holdouts.
-    ; 4. Free the port: fuser only kills sockets the caller owns; ss/lsof
-    ;    fallbacks just *show* the holder.
-    ; 5. Reset Skill-side IPC state and stderr buffer.
-    if(boundp('RBIpc) && RBIpc != 'unbound then
-        errset(ipcKillProcess(RBIpc)))
-    sh(sprintf(nil
-        "echo \"[RAMIC StopAll] user=$USER scope=own-uid port=%d\" >&2; pids=$(pgrep -u \"$USER\" -f 'ramic_bridge_daemon_[23]'); if [ -n \"$pids\" ]; then echo \"[RAMIC StopAll] killing pids: $pids\" >&2; echo \"$pids\" | xargs -r kill; sleep 2; pids2=$(pgrep -u \"$USER\" -f 'ramic_bridge_daemon_[23]'); [ -n \"$pids2\" ] && echo \"$pids2\" | xargs -r kill -9; else echo \"[RAMIC StopAll] no own daemon processes\" >&2; fi; if command -v fuser >/dev/null 2>&1; then fuser -k %d/tcp 2>/dev/null; elif command -v ss >/dev/null 2>&1; then ss -tlnp 2>/dev/null | awk -v p=%d '$4 ~ \":\"p\"$\"' >&2; elif command -v lsof >/dev/null 2>&1; then lsof -iTCP:%d -sTCP:LISTEN >&2; fi"
-        RBPort RBPort RBPort RBPort))
-    RBIpc = 'unbound
-    RBLastPid = nil
-    RBLastHost = ""
-    RBLastIP = ""
-    RBStatCount = 0
-    RBStatErrors = 0
-    RBStatUptime = 0
-    RBStderrBuf = ""
-    printf("[RAMIC Bridge] RBStopAll: killed own daemons (UID-scoped, port=%d); verify: ss -tlnp | grep %d\n"
-        RBPort RBPort)
+    ; Compatibility alias: only this CIW's tracked child.
+    RBStop()
 )
 
 ; ============================================================================
@@ -378,9 +425,9 @@ RBMBtnStop = hiCreateButton(
 
 RBMIntPort = hiCreateIntField(
     ?name 'RBMIntPort
-    ?prompt "Port"
-    ?value RBPort
-    ?defValue RBPort
+    ?prompt "Port (0 = automatic)"
+    ?value RBConfiguredPort
+    ?defValue RBConfiguredPort
     ?callback nil)
 
 RBMBolLocal = hiCreateBooleanButton(
@@ -414,7 +461,7 @@ RBMBolLog = hiCreateBooleanButton(
 
 ; ----------------------------------------------------------------------
 ; Apply -- commits the form's checkbox / port edits back to SKILL
-; globals (RBLocal / RBPort / RBDLog / RBEcho).  When Local / Port /
+; globals (RBLocal / RBConfiguredPort / RBDLog / RBEcho).  When Local / Port /
 ; Daemon-log changed, RBMApply() also restarts the daemon so the new
 ; bind setting takes effect.  Lives inline in the form (rather than as
 ; the Motif bottom 'Apply button) because this IC's hiCreateAppForm
@@ -426,11 +473,11 @@ RBMBtnApply = hiCreateButton(
     ?callback "RBMApply() RBMRefresh()")
 
 ; ----------------------------------------------------------------------
-; Emergency action -- UID-scoped (only kills *this user's* daemons).
+; Compatibility force-stop action -- only this CIW's tracked bridge child.
 ; ----------------------------------------------------------------------
 RBMBtnStopAll = hiCreateButton(
     ?name 'RBMBtnStopAll
-    ?buttonText "Kill MY daemons  (force, UID-scoped)"
+    ?buttonText "Stop this bridge (force)"
     ?callback "RBStopAll() RBMRefresh()")
 
 ; Form geometry: each section is roughly y = [section_y .. section_y+section_h].
@@ -476,7 +523,7 @@ hiCreateAppForm(
     )
     ; ``Empty`` drops the default OK/Cancel/Help row (~50 px).  Apply
     ; appears as the inline RBMBtnApply button above; pressing it
-    ; calls RBMApply() which diffs form values vs live RBLocal/RBPort/
+    ; calls RBMApply() which diffs form values vs live RBLocal/RBConfiguredPort/
     ; RBDLog and restarts the daemon if any toggled.  ``?callback``
     ; is also wired to RBMApply so future layout changes that re-add
     ; an OK button keep the same semantics.
@@ -499,34 +546,44 @@ RBMonInstalled = t
 
 ; ---------------------------------------------------------------------
 ; Banner menu -- guarded SEPARATELY from the form because hiInsertBanner
-; Menu has no remove-and-replace primitive on this IC build.  We need
-; the form to be re-creatable (toggle RBMonInstalled = nil + reload),
-; but the menu must stay built once per Virtuoso session.
+; Menu has no remove-and-replace primitive on this IC build.  During
+; .cdsinit, the CIW banner is still being assembled: inserting immediately
+; can return before the standard menus finish and the custom menu then gets
+; lost.  Install five seconds later, and only mark success when Cadence says
+; the menu was actually inserted.  Repeated timers/reloads are harmless
+; because the first successful call sets RBMenuInstalled.
 ; ---------------------------------------------------------------------
-unless(boundp('RBMenuInstalled) && RBMenuInstalled
-    ramicMenu = hiCreatePulldownMenu(
-        'ramicMenu
-        "RAMIC"
-        list(
-            hiCreateMenuItem(
-                ?name 'RAMIC_Bridge
-                ?itemText "RAMIC Bridge..."
-                ?callback "hiDisplayForm(RBMonitor)"
-            )
-            hiCreateMenuItem(
-                ?name 'RAMIC_PrintLines10
-                ?itemText "Print 10 Empty Lines"
-                ?callback "RBPrintEmptyLines(10)"
-            )
-            hiCreateMenuItem(
-                ?name 'RAMIC_PrintLines20
-                ?itemText "Print 20 Empty Lines"
-                ?callback "RBPrintEmptyLines(20)"
+procedure(RBInstallMenu()
+    unless(boundp('RBMenuInstalled) && RBMenuInstalled
+        ramicMenu = hiCreatePulldownMenu(
+            'ramicMenu
+            "RAMIC"
+            list(
+                hiCreateMenuItem(
+                    ?name 'RAMIC_Bridge
+                    ?itemText "RAMIC Bridge..."
+                    ?callback "hiDisplayForm(RBMonitor)"
+                )
+                hiCreateMenuItem(
+                    ?name 'RAMIC_PrintLines10
+                    ?itemText "Print 10 Empty Lines"
+                    ?callback "RBPrintEmptyLines(10)"
+                )
+                hiCreateMenuItem(
+                    ?name 'RAMIC_PrintLines20
+                    ?itemText "Print 20 Empty Lines"
+                    ?callback "RBPrintEmptyLines(20)"
+                )
             )
         )
+        when(hiInsertBannerMenu(window(1) ramicMenu 3)
+            RBMenuInstalled = t
+        )
     )
-    hiInsertBannerMenu(window(1) ramicMenu 3)
-    RBMenuInstalled = t
+)
+
+unless(boundp('RBMenuInstalled) && RBMenuInstalled
+    hiRegTimer("RBInstallMenu()" 50)
 )
 
 procedure(RBMRefresh()
@@ -598,7 +655,7 @@ procedure(RBMRefresh()
                             "RAMIC Bridge: Down")))
             )
 
-            errset(RBMonitor->RBMIntPort->value = RBPort)
+            errset(RBMonitor->RBMIntPort->value = RBConfiguredPort)
             errset(RBMonitor->RBMBolLocal->value = RBLocal)
             errset(RBMonitor->RBMBolEcho->value = RBEcho)
             errset(RBMonitor->RBMBolLog->value = RBDLog)
@@ -609,14 +666,17 @@ procedure(RBMRefresh()
 procedure(RBMApply()
     ; Apply changes from the monitor form to the configuration
 	when(boundp('RBMonInstalled)
+	unless(integerp(RBMonitor->RBMIntPort->value) &&
+           RBMonitor->RBMIntPort->value >= 0 && RBMonitor->RBMIntPort->value <= 65535
+        error("Port must be 0 (automatic) or 1..65535"))
 	RBEcho = RBMonitor->RBMBolEcho->value
 	prog((refresh)
 	unless(RBMonitor->RBMBolLocal->value == RBLocal
 		RBLocal = RBMonitor->RBMBolLocal->value
 		refresh = t
 	)
-	unless(RBMonitor->RBMIntPort->value == RBPort
-		RBPort = RBMonitor->RBMIntPort->value
+	unless(RBMonitor->RBMIntPort->value == RBConfiguredPort
+		RBConfiguredPort = RBMonitor->RBMIntPort->value
 		refresh = t
 	)
 	unless(RBMonitor->RBMBolLog->value == RBDLog
@@ -624,8 +684,7 @@ procedure(RBMApply()
 		refresh = t
 	)
 	when(refresh
-		RBStop()
-		RBStart()
+		RBSetPort(RBConfiguredPort)
 	)
 	)
 	)
@@ -651,6 +710,12 @@ procedure(RBPrintEmptyLines(@optional (n 10))
     ; Push old CIW lines off-screen for a clean visual workspace.
     ; Default 10; pass any positive integer.
     for(i 1 n printf("\n"))
+)
+
+; Stop only this session's daemon on a completed exit. Register once across
+; reloads; regExitAfter avoids stopping the bridge when an exit is cancelled.
+unless(boundp('RBExitHookInstalled) && RBExitHookInstalled
+    RBExitHookInstalled = regExitAfter('RBStop)
 )
 
 ; Auto-start the bridge when this file is loaded (no second daemon if already up)

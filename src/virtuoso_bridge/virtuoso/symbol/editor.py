@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from virtuoso_bridge.virtuoso.editor import ensure_operation_response
+from virtuoso_bridge.virtuoso.editor import (
+    close_editor_cellview,
+    ensure_operation_response,
+    redraw_editor_windows,
+    remember_editor_cellview,
+)
 from virtuoso_bridge.virtuoso.ops import open_cell_view, save_current_cellview
 from virtuoso_bridge.virtuoso.symbol.ops import symbol_check
 
@@ -24,8 +29,10 @@ class SymbolEditor:
         view_type: str = "schematicSymbol",
         mode: str = "a",
         timeout: int = 60,
+        keep_open: bool = False,
     ) -> None:
         self.client = client
+        self.keep_open = keep_open
         self.lib = lib
         self.cell = cell
         self.view = view
@@ -44,6 +51,7 @@ class SymbolEditor:
                 mode=self.mode,
             )
         )
+        self.commands.append(remember_editor_cellview(opened=True))
         return self
 
     def add(self, skill_cmd: str) -> None:
@@ -54,5 +62,8 @@ class SymbolEditor:
         if exc_type is None:
             self.commands.append(symbol_check())
             self.commands.append(save_current_cellview())
+            self.commands.append(redraw_editor_windows())
+            if not self.keep_open:
+                self.commands.append(close_editor_cellview())
             response = self.client.execute_operations(self.commands, timeout=self.timeout)
             ensure_operation_response(response, context="symbol edit")

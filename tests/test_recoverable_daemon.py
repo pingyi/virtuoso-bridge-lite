@@ -5,6 +5,8 @@ import hashlib
 import hmac
 import importlib.util
 import json
+import os
+import re
 import shutil
 import socket
 import subprocess
@@ -23,6 +25,9 @@ from virtuoso_bridge.virtuoso.basic.resources.ramic_request_recovery import (
     DEFAULT_MAX_FRAME_BYTES,
     DEFAULT_TTL_SECONDS,
     ExecutionUncertain,
+    REPLY_TAG_LEN,
+    REPLY_TAG_PREFIX,
+    DeferredFiles,
     RecoverableRequestManager,
     RequestNotStarted,
     read_response_frame,
@@ -117,7 +122,11 @@ def _exchange(module, payload: dict, *, disconnect: bool = False) -> bytes:
     return b"".join(chunks)
 
 
-def _import_daemon(monkeypatch, tmp_path):
+def _import_daemon(monkeypatch, tmp_path, *, reply_tags=False):
+    if reply_tags:
+        monkeypatch.setenv("RB_REPLY_TAGS", "1")
+    else:
+        monkeypatch.delenv("RB_REPLY_TAGS", raising=False)
     fcntl_stub = types.SimpleNamespace(
         fcntl=lambda *args, **kwargs: 0, F_GETFL=3, F_SETFL=4
     )
@@ -467,11 +476,25 @@ def test_recovery_auth_replay_tamper_and_instance_rejection(monkeypatch, tmp_pat
     assert "mismatch" in result["diagnostic"]
 
 
-def test_legacy_watchdog_poison_blocks_recoverable_without_consuming_late_frame(
+def test_timed_out_legacy_request_poisons_until_the_resync_probe_answers(
     monkeypatch, tmp_path
 ) -> None:
     module = _import_daemon(monkeypatch, tmp_path)
-    chunks = iter([b"\x02", b"l", b"a", b"t", b"e", b"\x1e"])
+    late = [b"\x02", b"l", b"a", b"t", b"e", b"\x1e"]
+    written = []
+    reply_allowed = threading.Event()
+    pending = list(late)
+
+    def read(n=1):
+        if pending:
+            return pending.pop(0)
+        probe = next((w for w in written if b"vb-resync-" in w), None)
+        if probe is None or not reply_allowed.is_set():
+            return None  # would block: Virtuoso has not answered yet
+        start = probe.index(b'"vb-resync-')
+        pending.extend(bytes([c]) for c in b"\x02" + probe[start:probe.index(b'"', start + 1) + 1] + b"\x1e")
+        written.clear()
+        return pending.pop(0)
 
     class _Timer:
         daemon = True
@@ -487,30 +510,60 @@ def test_legacy_watchdog_poison_blocks_recoverable_without_consuming_late_frame(
             pass
 
     fake_stdout = types.SimpleNamespace(
-        buffer=types.SimpleNamespace(write=lambda data: len(data), flush=lambda: None)
-    )
-    fake_stdin = types.SimpleNamespace(
-        buffer=types.SimpleNamespace(read=lambda n=1: next(chunks))
+        buffer=types.SimpleNamespace(write=lambda data: written.append(bytes(data)) or len(data),
+                                     flush=lambda: None)
     )
     monkeypatch.setattr(module, "threading", types.SimpleNamespace(
         Event=threading.Event, Timer=_Timer, Lock=threading.Lock
     ))
     monkeypatch.setattr(module.sys, "stdout", fake_stdout)
-    monkeypatch.setattr(module.sys, "stdin", fake_stdin)
-    monkeypatch.setattr(module.os, "kill", lambda *args: None)
-    acquired, _ = module._RECOVERY.try_begin_legacy()
-    assert acquired
-    with pytest.raises(ExecutionUncertain, match="watchdog fired") as caught:
+    monkeypatch.setattr(module.sys, "stdin", types.SimpleNamespace(buffer=types.SimpleNamespace(read=read)))
+    monkeypatch.setattr(module.os, "kill", lambda *args: pytest.fail("the request was signalled"))
+    assert module._RECOVERY.try_begin_legacy()[0]
+    with pytest.raises(ExecutionUncertain, match="did not answer within the request timeout") as caught:
         module._transmit_and_read("1+1", 0.01)
+    # The request path never reads the late frame itself.
+    assert pending == late
     module._RECOVERY.finish_legacy(str(caught.value))
 
     called = []
     rejected = module._RECOVERY.submit(
         _request_id(), "2+2", lambda skill: called.append(skill) or "\x02new"
     )
-    assert rejected["state"] == "rejected"
+    assert rejected["state"] == "rejected" and "resync probe" in rejected["diagnostic"]
     assert called == []
-    assert list(chunks) == [b"\x02", b"l", b"a", b"t", b"e", b"\x1e"]
+    assert module._RECOVERY.lane_state()["state"] == "resyncing"
+
+    reply_allowed.set()
+    deadline = time.monotonic() + 2
+    while module._RECOVERY.poisoned and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert module._RECOVERY.poisoned is None
+    assert module._RECOVERY.lane_state() == {"state": "idle"}
+    assert pending == []  # the late frame and the probe reply were both consumed
+    request_id = _request_id()
+    module._RECOVERY.submit(request_id, "3+3", lambda skill: called.append(skill) or "\x02new")
+    assert _wait_receipt(module._RECOVERY, request_id)["response"] == "\x02new"
+    assert called == ["3+3"]
+
+
+def test_resync_skips_a_half_read_frame_and_fails_on_a_closed_pipe() -> None:
+    from virtuoso_bridge.virtuoso.basic.resources.ramic_request_recovery import resynchronize
+
+    sent = []
+    # What follows a timed-out read: the rest of a half-read frame, then
+    # another late frame; Virtuoso answers the probe last.
+    queued = list(b'ate"\x1e\x15err\x1e')
+
+    def read_one():
+        if not queued:
+            queued.extend(b"\x02" + sent[-1].encode("ascii") + b"\x1e")
+        return bytes([queued.pop(0)])
+
+    assert resynchronize(sent.append, read_one) is True
+    assert len(sent) == 1 and sent[0].startswith('"vb-resync-') and sent[0].endswith('"')
+    assert queued == []
+    assert resynchronize(lambda probe: None, lambda: b"") is False
 
 
 def test_python2_sources_are_ascii_and_optional_runtime_compiles() -> None:
@@ -529,7 +582,7 @@ def test_python2_sources_are_ascii_and_optional_runtime_compiles() -> None:
 
 
 def test_legacy_lane_stays_owned_until_watchdog_decision_finishes(monkeypatch, tmp_path):
-    """A timer paused before its decision must not signal the next request."""
+    """A timer paused before its decision must not release the lane early."""
     module = _import_daemon(monkeypatch, tmp_path)
     callback_entered = threading.Event()
     allow_callback = threading.Event()
@@ -573,7 +626,11 @@ def test_legacy_lane_stays_owned_until_watchdog_decision_finishes(monkeypatch, t
             write=lambda data: len(data), flush=lambda: None,
         )),
     ))
-    monkeypatch.setattr(module.os, "kill", lambda *args: signals.append(args))
+    # Exercise the race with a verified owner. Unknown/legacy PID inference
+    # is diagnostic only and must not authorize a process-level signal.
+    monkeypatch.setattr(module, "_owner", types.SimpleNamespace(
+        interrupt=lambda: signals.append("verified-owner"),
+    ))
 
     def read_frame(read_one):
         response_read.set()
@@ -604,7 +661,8 @@ def test_legacy_lane_stays_owned_until_watchdog_decision_finishes(monkeypatch, t
         for timer in timers:
             timer.worker.join(2)
     assert not caller.is_alive()
-    assert len(signals) == 1 and module._RECOVERY.poisoned
+    # The lane stays owned until the watchdog decided, and nothing is signalled.
+    assert signals == [] and module._RECOVERY.poisoned
 
 
 @pytest.mark.parametrize("daemon_name", ["ramic_bridge_daemon_3.py", "ramic_bridge_daemon_27.py"])
@@ -645,8 +703,8 @@ def test_finished_legacy_call_ignores_already_started_timer(daemon_name, read_fa
         "sys": types.SimpleNamespace(stdout=stream),
         "os": types.SimpleNamespace(kill=lambda *args: signals.append(args)),
         "signal": types.SimpleNamespace(SIGINT=2), "virtuoso_pid": 1,
-        "_prepare_skill": lambda code: (b"request", None),
-        "read_response_frame": read_frame,
+        "_prepare_skill": lambda code, tag=None: (b"request", None),
+        "read_response_frame": read_frame, "_REPLY_TAGS": False,
         "RequestNotStarted": RequestNotStarted, "ExecutionUncertain": ExecutionUncertain,
     }
     tree = ast.parse((_resources() / daemon_name).read_text(encoding="ascii"))
@@ -661,3 +719,295 @@ def test_finished_legacy_call_ignores_already_started_timer(daemon_name, read_fa
     # Simulate a callback that Timer.cancel() could not prevent from running.
     timers[0].callback(*timers[0].args)
     assert signals == []
+
+
+def test_handshake_reports_the_lane_state(monkeypatch, tmp_path) -> None:
+    module = _import_daemon(monkeypatch, tmp_path)
+    assert json.loads(module._capabilities_body())["lane"] == {"state": "idle"}
+    assert module._RECOVERY.try_begin_legacy()[0]
+    lane = json.loads(module._capabilities_body())["lane"]
+    assert lane["state"] == "busy" and lane["detail"] == "legacy" and lane["since_ms"] > 0
+    module._RECOVERY.finish_legacy()
+
+
+@pytest.mark.parametrize("daemon_name", ["ramic_bridge_daemon_3.py", "ramic_bridge_daemon_27.py"])
+def test_both_daemons_resync_instead_of_signalling(daemon_name) -> None:
+    tree = ast.parse((_resources() / daemon_name).read_text(encoding="ascii"))
+    watchdog = next(node for node in tree.body
+                    if isinstance(node, ast.FunctionDef) and node.name == "watchdog_callback")
+    assert "interrupt" not in ast.dump(watchdog)
+    registrations = [node for node in tree.body if isinstance(node, ast.Expr)
+                     and "set_resync" in ast.dump(node) and "_resync_lane" in ast.dump(node)]
+    assert len(registrations) == 1
+
+
+def test_timed_out_multiline_request_keeps_its_file_until_the_lane_resyncs(
+    monkeypatch, tmp_path
+) -> None:
+    """Virtuoso load()s the file once the CIW is unblocked; deleting it at the
+    timeout made the queued request fail instead of running."""
+    module = _import_daemon(monkeypatch, tmp_path)
+    written = []
+    reply_allowed = threading.Event()
+    pending = []
+
+    def read(n=1):
+        if pending:
+            return pending.pop(0)
+        probe = next((w for w in written if b"vb-resync-" in w), None)
+        if probe is None or not reply_allowed.is_set():
+            return None
+        start = probe.index(b'"vb-resync-')
+        frame = b"\x02" + probe[start:probe.index(b'"', start + 1) + 1] + b"\x1e"
+        pending.extend(bytes([c]) for c in frame)
+        written.clear()
+        return pending.pop(0)
+
+    class _Timer:
+        daemon = True
+
+        def __init__(self, _seconds, callback, args=()):
+            self.callback = callback
+            self.args = args
+
+        def start(self):
+            self.callback(*self.args)
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(module, "threading", types.SimpleNamespace(
+        Event=threading.Event, Timer=_Timer, Lock=threading.Lock
+    ))
+    monkeypatch.setattr(module.sys, "stdout", types.SimpleNamespace(buffer=types.SimpleNamespace(
+        write=lambda data: written.append(bytes(data)) or len(data), flush=lambda: None,
+    )))
+    monkeypatch.setattr(module.sys, "stdin", types.SimpleNamespace(buffer=types.SimpleNamespace(read=read)))
+    assert module._RECOVERY.try_begin_legacy()[0]
+
+    with pytest.raises(ExecutionUncertain, match="did not answer") as caught:
+        module._transmit_and_read("let((x)\n  x = 1\n)", 0.01)
+    loaded = re.search(r'load\("([^"]+)"\)', written[0].decode()).group(1)
+    assert os.path.exists(loaded), "the queued load() would find no file"
+    module._RECOVERY.finish_legacy(str(caught.value))
+    assert os.path.exists(loaded)
+
+    reply_allowed.set()
+    deadline = time.monotonic() + 2
+    while module._RECOVERY.poisoned and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert module._RECOVERY.poisoned is None
+    assert not os.path.exists(loaded)
+
+
+@pytest.mark.parametrize("answered", [True, False])
+def test_multiline_file_is_deleted_at_once_when_answered_or_never_sent(
+    monkeypatch, tmp_path, answered
+) -> None:
+    module = _import_daemon(monkeypatch, tmp_path)
+    written = []
+
+    def write(data):
+        written.append(bytes(data))
+        return len(data) if answered else 0
+
+    monkeypatch.setattr(module.sys, "stdout", types.SimpleNamespace(
+        buffer=types.SimpleNamespace(write=write, flush=lambda: None)))
+    monkeypatch.setattr(module, "read_response_frame", lambda read_one: b"\x02t")
+    if answered:
+        assert module._transmit_and_read("progn(\n  t\n)") == b"\x02t"
+    else:
+        with pytest.raises(RequestNotStarted):
+            module._transmit_and_read("progn(\n  t\n)")
+    loaded = re.search(r'load\("([^"]+)"\)', written[0].decode()).group(1)
+    assert not os.path.exists(loaded)
+    assert module._DEFERRED_FILES.paths() == []
+
+
+def test_submit_with_wait_ms_returns_a_quick_result_in_the_reply(monkeypatch, tmp_path) -> None:
+    module = _import_daemon(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "_execute_recoverable", lambda _skill: "\x02quick")
+    request_id = _request_id()
+    submit = _payload(module, "submit", request_id, skill="x")
+    submit["wait_ms"] = 1000
+    reply = _decode_reply(_exchange(module, submit), submit["nonce"])
+    assert reply["state"] == "completed" and reply["response"] == "\x02quick"
+
+
+def test_submit_wait_is_bounded_and_a_slow_request_stays_queryable(monkeypatch, tmp_path) -> None:
+    module = _import_daemon(monkeypatch, tmp_path)
+    release = threading.Event()
+
+    def execute(_skill):
+        release.wait(2)
+        return "\x02late"
+
+    monkeypatch.setattr(module, "_execute_recoverable", execute)
+    request_id = _request_id()
+    submit = _payload(module, "submit", request_id, skill="x")
+    submit["wait_ms"] = 60
+    started = time.monotonic()
+    reply = _decode_reply(_exchange(module, submit), submit["nonce"])
+    assert reply["state"] == "running" and time.monotonic() - started < 1
+    release.set()
+    _wait_receipt(module._RECOVERY, request_id)
+
+
+def test_recovery_wait_is_capped(monkeypatch) -> None:
+    from virtuoso_bridge.virtuoso.basic.resources import ramic_request_recovery as recovery
+
+    manager = recovery.RecoverableRequestManager()
+    release = threading.Event()
+    request_id = _request_id()
+    manager.submit(request_id, "x", lambda _skill: (release.wait(2), "\x02late")[1])
+    monkeypatch.setattr(recovery, "MAX_SUBMIT_WAIT_SECONDS", 0.05)
+    started = time.monotonic()
+    assert manager.wait(request_id, 30)["state"] == "running"
+    assert time.monotonic() - started < 1
+    release.set()
+    assert manager.wait(request_id, 2)["state"] == "completed"
+
+
+def _use_ciw(monkeypatch, module, read):
+    written = []
+    monkeypatch.setattr(module.sys, "stdout", types.SimpleNamespace(buffer=types.SimpleNamespace(
+        write=lambda data: written.append(bytes(data)) or len(data), flush=lambda: None,
+    )))
+    monkeypatch.setattr(module.sys, "stdin", types.SimpleNamespace(buffer=types.SimpleNamespace(read=read)))
+    return written
+
+
+def test_tagged_request_drops_a_late_reply_and_releases_its_file(monkeypatch, tmp_path) -> None:
+    module = _import_daemon(monkeypatch, tmp_path, reply_tags=True)
+    assert json.loads(module._capabilities_body())["reply_tags"] == 1
+    late_file = tmp_path / "vb_eval_late.il"
+    late_file.write_text("t")
+    module._DEFERRED_FILES.add(str(late_file), "a" * REPLY_TAG_LEN)
+    pending = list(b"\x02" + b"a" * REPLY_TAG_LEN + b"late\x1e")
+
+    def read(n=1):
+        if not pending:
+            sent = written[-1]
+            pending.extend(b"\x02" + sent[6:22] + b"42\x1e")
+        return bytes([pending.pop(0)])
+
+    written = _use_ciw(monkeypatch, module, read)
+    assert module._transmit_and_read("1+1") == b"\x0242"
+    assert re.fullmatch(
+        rb"vbtag:[0-9a-f]{16} let\(\(\(__vb_r progn\(1\+1\)\)\) hiFlush\(\) __vb_r\)\n",
+        written[0],
+    )
+    assert not late_file.exists()
+    assert module._DEFERRED_FILES.paths() == []
+
+
+def test_untagged_daemon_sends_plain_code(monkeypatch, tmp_path) -> None:
+    module = _import_daemon(monkeypatch, tmp_path)
+    assert json.loads(module._capabilities_body())["reply_tags"] == 0
+    written = _use_ciw(monkeypatch, module, lambda n=1: None)
+    monkeypatch.setattr(module, "read_response_frame", lambda read_one: b"\x02" + b"b" * 16)
+    # Without tags a body that happens to look like one is returned untouched.
+    assert module._transmit_and_read("1+1") == b"\x02" + b"b" * 16
+    assert written[0].startswith(b"let(")
+
+
+def test_tagged_timeout_keeps_its_file_until_its_own_late_reply(monkeypatch, tmp_path) -> None:
+    """Even if the CIW answers the resync probe before a request blocked
+    behind a dialog, that request's file must outlive the resync, and its
+    late reply must not be taken for the next request's answer (replies were
+    once shifted by one, #274)."""
+    module = _import_daemon(monkeypatch, tmp_path, reply_tags=True)
+    pending = []
+    blocked = []
+
+    def read(n=1):
+        if pending:
+            return bytes([pending.pop(0)])
+        if not written:
+            return None
+        sent = written.pop(0)
+        if not blocked:
+            blocked.append(sent)  # waits behind the dialog
+            return None
+        if b"vb-resync-" in sent:
+            start = sent.index(b'"vb-resync-')
+            body = sent[start:sent.index(b'"', start + 1) + 1]
+        else:
+            body = b"4"
+        pending.extend(b"\x02" + sent[6:22] + body + b"\x1e")
+        return bytes([pending.pop(0)])
+
+    class _Timer:
+        daemon = True
+
+        def __init__(self, _seconds, callback, args=()):
+            self.callback = callback
+            self.args = args
+
+        def start(self):
+            self.callback(*self.args)
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(module, "threading", types.SimpleNamespace(
+        Event=threading.Event, Timer=_Timer, Lock=threading.Lock
+    ))
+    written = _use_ciw(monkeypatch, module, read)
+    assert module._RECOVERY.try_begin_legacy()[0]
+    with pytest.raises(ExecutionUncertain, match="did not answer") as caught:
+        module._transmit_and_read("let((x)\n  x = 1\n)", 0.01)
+    loaded = re.search(rb'load\("([^"]+)"\)', written[0]).group(1).decode()
+    module._RECOVERY.finish_legacy(str(caught.value))
+
+    deadline = time.monotonic() + 2
+    while module._RECOVERY.poisoned and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert module._RECOVERY.poisoned is None
+    assert os.path.exists(loaded), "the blocked load() would find no file"
+
+    # The dialog closes: the blocked request answers after the probe.
+    pending.extend(b"\x02" + blocked[0][6:22] + b"t\x1e")
+    assert module._transmit_and_read("2+2") == b"\x024"
+    assert not os.path.exists(loaded)
+    assert module._DEFERRED_FILES.paths() == []
+
+
+def test_deferred_files_age_out_and_follow_late_replies_in_raw_bytes(tmp_path) -> None:
+    now = [0.0]
+    files = DeferredFiles(ttl_seconds=10, max_files=2, clock=lambda: now[0])
+    paths = []
+    for index in range(5):
+        path = tmp_path / ("vb_eval_%d.il" % index)
+        path.write_text("t")
+        paths.append(path)
+    files.add(str(paths[0]))
+    for index in (1, 2, 3):
+        files.add(str(paths[index]), str(index) * REPLY_TAG_LEN)
+    assert not paths[1].exists(), "more than max_files were kept"
+    # The resync scan sees a late NAK reply of request 2 go by.
+    for byte in b'ate"\x1e\x15' + b"2" * REPLY_TAG_LEN + b"err\x1e":
+        files.observe(bytes([byte]))
+    assert not paths[2].exists()
+    now[0] = 11.0
+    files.add(str(paths[4]), "4" * REPLY_TAG_LEN)
+    assert not paths[3].exists(), "an aged-out file was kept"
+    files.release(None)
+    files.release_untagged()
+    assert not paths[0].exists()
+    assert files.paths() == [str(paths[4])]
+
+
+def test_ciw_handler_echoes_the_tag_the_daemons_send() -> None:
+    il = (_resources() / "ramic_bridge.il").read_text(encoding="utf-8")
+    handler = il[il.index("procedure(RBIpcDataHandler"):il.index("procedure(RBIpcErrHandler")]
+    size = len(REPLY_TAG_PREFIX)
+    assert f'equal(substring(data 1 {size}) "{REPLY_TAG_PREFIX}")' in handler
+    assert f"greaterp(strlen(data) {size + REPLY_TAG_LEN + 1})" in handler
+    assert f"tag = substring(data {size + 1} {REPLY_TAG_LEN})" in handler
+    assert f"data = substring(data {size + REPLY_TAG_LEN + 2})" in handler
+    # Both the STX and the NAK reply carry the tag right after the marker.
+    assert handler.count('sprintf(nil "%c%s%L%c" intToChar(') == 2
+    assert handler.count('or(tag "")') == 2
+    launch = next(line for line in il.splitlines() if "ipcBeginProcess(" in line and "RBDPath" in line)
+    assert " RB_REPLY_TAGS=1 " in launch

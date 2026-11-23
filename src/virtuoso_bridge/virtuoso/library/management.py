@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import posixpath
 from dataclasses import dataclass
 from typing import Any
 
@@ -62,6 +63,9 @@ def library_create_skill(
         else q(_require_text("technology_library", technology_library))
     )
     info = _library_info_expr("vbLib")
+    # ddCreateLib only returns nil when the parent directory is missing or
+    # read-only; the reason goes to CDS.log. Check it first, on the CIW host.
+    parent = _library_parent(path)
     return f"""
 let((vbLib vbTechName vbBound)
   vbTechName = {technology}
@@ -69,6 +73,10 @@ let((vbLib vbTechName vbBound)
     then list("error" "libraryExists")
     else if(vbTechName && !ddGetObj(vbTechName)
       then list("error" "technologyLibraryNotFound")
+    else if(!isDir({q(parent)})
+      then list("error" "parentDirectoryMissing")
+    else if(!isWritable({q(parent)})
+      then list("error" "parentDirectoryNotWritable")
       else progn(
         vbLib = ddCreateLib({q(name)} {q(path)})
         if(!vbLib
@@ -85,6 +93,8 @@ let((vbLib vbTechName vbBound)
           )
         )
       )
+    )
+    )
     )
   )
 )
@@ -108,26 +118,40 @@ def library_delete_skill(name: str) -> str:
 
 
 def library_rename_skill(name: str, new_name: str) -> str:
-    """Build SKILL that renames a library through ``ccpRename``."""
+    """Build SKILL that renames a library through ``ccpRename``.
+
+    ``ccpRename`` can create the destination library and then fail without
+    removing the source (for example for a library with no cells and no
+    technology). A destination left that way holds no cells and is removed,
+    so a failed rename keeps exactly the original library.
+    """
     name = _require_text("name", name)
     new_name = _require_text("new_name", new_name)
     return f"""
-let((vbSource vbDestination vbRenamed vbLib)
+let((vbSource vbDestination vbRenamed vbLib vbSourcePath)
   if(!ddGetObj({q(name)})
     then list("error" "libraryNotFound")
     else if(ddGetObj({q(new_name)})
       then list("error" "destinationExists")
       else progn(
+        vbSourcePath = ddGetObj({q(name)})~>readPath
         vbSource = gdmCreateSpec({q(name)} "" "" "" "CDBA")
         vbDestination = gdmCreateSpec({q(new_name)} "" "" "" "CDBA")
         if(!vbSource || !vbDestination
           then list("error" "renameSpecFailed")
           else progn(
-            vbRenamed = ccpRename(vbSource vbDestination nil)
+            vbRenamed = car(errset(ccpRename(vbSource vbDestination nil) t))
             vbLib = ddGetObj({q(new_name)})
-            if(vbRenamed && vbLib && !ddGetObj({q(name)})
-              then list("ok" {_library_info_expr("vbLib")})
-              else list("error" "renameFailed")
+            cond(
+              (vbRenamed && vbLib && !ddGetObj({q(name)})
+                list("ok" {_library_info_expr("vbLib")}))
+              (vbLib && ddGetObj({q(name)}) && !vbLib~>cells
+                  && vbLib~>readPath != vbSourcePath
+                  && ddDeleteObj(vbLib) && !ddGetObj({q(new_name)})
+                list("error" "renameFailed"))
+              (vbLib && ddGetObj({q(name)})
+                list("error" "renameIncomplete"))
+              (t list("error" "renameFailed"))
             )
           )
         )
@@ -207,7 +231,7 @@ def create_library(
             f"library {name!r} was created but technology binding failed",
             info,
         )
-    _raise_record_error(record, f"create library {name}", name=name)
+    _raise_record_error(record, f"create library {name}", name=name, path=path)
     return _library_info_from_record(_record_value(record, f"create library {name}"))
 
 
@@ -281,7 +305,9 @@ def _execute_record(client: Any, skill: str, timeout: int, operation: str) -> li
     return parsed
 
 
-def _raise_record_error(record: list[Any], operation: str, *, name: str = "") -> None:
+def _raise_record_error(
+    record: list[Any], operation: str, *, name: str = "", path: str = "",
+) -> None:
     if record[0] == "ok":
         return
     if record[0] != "error" or len(record) < 2 or not isinstance(record[1], str):
@@ -293,6 +319,17 @@ def _raise_record_error(record: list[Any], operation: str, *, name: str = "") ->
         raise RuntimeError(f"library {name!r} already exists")
     if code == "destinationExists":
         raise RuntimeError(f"{operation} failed: destination library already exists")
+    if code == "renameIncomplete":
+        raise RuntimeError(
+            f"{operation} failed and left both libraries defined; "
+            "inspect both before retrying"
+        )
+    if code in ("parentDirectoryMissing", "parentDirectoryNotWritable") and path:
+        problem = "does not exist" if code == "parentDirectoryMissing" else "is not writable"
+        raise RuntimeError(
+            f"{operation} failed: parent directory {_library_parent(path)!r} {problem} "
+            "on the Virtuoso host"
+        )
     if code == "technologyLibraryNotFound":
         raise RuntimeError(f"{operation} failed: technology library does not exist")
     raise RuntimeError(f"{operation} failed: {code}")
@@ -322,6 +359,12 @@ def _library_info_expr(variable: str) -> str:
         f'list("library" {variable}~>name {variable}~>readPath '
         f"techGetTechLibName({variable}))"
     )
+
+
+def _library_parent(path: str) -> str:
+    """Parent directory of a library path, as the CIW host resolves it."""
+    parent = posixpath.dirname(path.rstrip("/"))
+    return parent or "."
 
 
 def _require_text(field: str, value: str) -> str:

@@ -156,7 +156,7 @@ class _AuthDaemon:
 
             skill = req["skill"]
             self.executed.append(skill)
-            if skill.strip() == "getpid()":
+            if skill.strip() == "ipcGetPid()":
                 body = str(self.virtuoso_pid)
             else:
                 body = '"2"' if skill.strip() == "1+1" else "nil"
@@ -311,7 +311,8 @@ def test_save_state_omits_daemon_token(tmp_path, monkeypatch) -> None:
     client = SSHClient(remote_host="localhost", port=65432)
     client._daemon_token = TOKEN
     client.save_state()
-    raw = (tmp_path / "state" / "state.json").read_text(encoding="utf-8")
+    (state_file,) = (tmp_path / "state").glob("state*.json")
+    raw = state_file.read_text(encoding="utf-8")
     assert "daemon_token" not in json.loads(raw)
     assert TOKEN not in raw
 
@@ -764,6 +765,69 @@ def _wait_for_listener(proc: subprocess.Popen, port: int) -> None:
     reason="real bridge daemon needs POSIX fcntl/signals (macOS/Linux only)",
 )
 class TestRealDaemon:
+    # Keep the simulated CIW input pipe open while testing TCP authentication.
+    # A closed IPC pipe now terminates the worker even when it is otherwise idle.
+    @pytest.mark.parametrize("version,interpreter", [
+        ("3", sys.executable), ("27", shutil.which("python2.7")),
+    ])
+    def test_parallel_daemons_need_distinct_ports(self, tmp_path, version, interpreter):
+        if interpreter is None:
+            pytest.skip("Python 2.7 is unavailable")
+        daemon_src = _resources_dir() / f"ramic_bridge_daemon_{version}.py"
+        token_path = tmp_path / "bridge_token"
+        env = {key: value for key, value in os.environ.items() if not key.startswith("RB_")}
+        env["RB_TOKEN_PATH"] = str(token_path)
+        processes = []
+
+        def launch(port):
+            proc = subprocess.Popen(
+                [interpreter, str(daemon_src), "127.0.0.1", str(port)],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE, env=env,
+            )
+            processes.append(proc)
+            _wait_for_listener(proc, port)
+            return proc
+
+        try:
+            first_port = _free_port()
+            first = launch(first_port)
+            collision = subprocess.run(
+                [interpreter, str(daemon_src), "127.0.0.1", str(first_port)],
+                stdin=subprocess.DEVNULL, capture_output=True, env=env, timeout=5,
+            )
+            assert collision.returncode == 1
+            assert f"Port {first_port} is already in use" in collision.stderr.decode()
+            assert b"RBSetPort" in collision.stderr
+            assert b"Traceback" not in collision.stderr
+            assert b"Leave the existing session running" in collision.stderr
+            assert first.poll() is None
+
+            second_port = _free_port()
+            second = launch(second_port)
+            token = daemon_auth.read_local_token(token_path)
+            instances = []
+            for port in (first_port, second_port):
+                nonce = os.urandom(16).hex()
+                reply = _raw_exchange(port, {
+                    "proto": 1, "op": "hello", "nonce": nonce,
+                    "mac": daemon_auth.hello_mac(token, nonce=nonce),
+                })
+                caps = json.loads(daemon_auth.verify_response(reply, token, nonce)[1:])
+                assert caps["auth"] == "on"
+                instances.append(caps["daemon_instance"])
+            assert instances[0] != instances[1]
+            assert first.poll() is None and second.poll() is None
+        finally:
+            for proc in processes:
+                if proc.poll() is None:
+                    proc.terminate()
+                try:
+                    proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.communicate(timeout=5)
+
     def test_rejects_unauthenticated_and_mismatched_requests(self, tmp_path) -> None:
         daemon_src = _resources_dir() / "ramic_bridge_daemon_3.py"
         token_path = tmp_path / "bridge_token"
@@ -771,7 +835,7 @@ class TestRealDaemon:
         env = dict(os.environ, RB_TOKEN_PATH=str(token_path))
         proc = subprocess.Popen(
             [sys.executable, str(daemon_src), "127.0.0.1", str(port)],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE, env=env,
         )
         try:
@@ -794,9 +858,10 @@ class TestRealDaemon:
         finally:
             proc.terminate()
             try:
-                proc.wait(timeout=5)
+                proc.communicate(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                proc.communicate(timeout=5)
 
     def test_signed_handshake_and_replay_protection(self, tmp_path) -> None:
         daemon_src = _resources_dir() / "ramic_bridge_daemon_3.py"
@@ -805,7 +870,7 @@ class TestRealDaemon:
         env = dict(os.environ, RB_TOKEN_PATH=str(token_path))
         proc = subprocess.Popen(
             [sys.executable, str(daemon_src), "127.0.0.1", str(port)],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE, env=env,
         )
         try:
@@ -846,9 +911,10 @@ class TestRealDaemon:
         finally:
             proc.terminate()
             try:
-                proc.wait(timeout=5)
+                proc.communicate(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                proc.communicate(timeout=5)
 
     @pytest.mark.parametrize(
         ("daemon_name", "interpreter"),
@@ -872,7 +938,7 @@ class TestRealDaemon:
         )
         proc = subprocess.Popen(
             [interpreter, str(daemon_src), "127.0.0.1", str(port)],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE, env=env,
         )
         try:
@@ -899,9 +965,10 @@ class TestRealDaemon:
         finally:
             proc.terminate()
             try:
-                proc.wait(timeout=5)
+                proc.communicate(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                proc.communicate(timeout=5)
 
     def test_missing_token_is_fatal_unless_explicitly_opted_in(self, tmp_path) -> None:
         daemon_src = _resources_dir() / "ramic_bridge_daemon_3.py"
@@ -913,7 +980,7 @@ class TestRealDaemon:
         env = dict(os.environ, RB_TOKEN_PATH=str(blocker / "sub" / "token"))
         proc = subprocess.Popen(
             [sys.executable, str(daemon_src), "127.0.0.1", str(port)],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE, env=env,
         )
         try:
@@ -921,6 +988,8 @@ class TestRealDaemon:
         except subprocess.TimeoutExpired:
             proc.kill()
             pytest.fail("daemon must exit when it cannot provision a token")
+        finally:
+            proc.communicate(timeout=5)
 
         # Explicit opt-in: boots with auth disabled.
         env = dict(
@@ -930,7 +999,7 @@ class TestRealDaemon:
         )
         proc = subprocess.Popen(
             [sys.executable, str(daemon_src), "127.0.0.1", str(port)],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE, env=env,
         )
         try:
@@ -940,9 +1009,10 @@ class TestRealDaemon:
         finally:
             proc.terminate()
             try:
-                proc.wait(timeout=5)
+                proc.communicate(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                proc.communicate(timeout=5)
 
 
 def test_daemon_scripts_compile() -> None:
@@ -1159,12 +1229,12 @@ def test_handshake_carries_virtuoso_pid(authed_daemon) -> None:
     authed_daemon.virtuoso_pid = 424242
     client = VirtuosoClient(host="127.0.0.1", port=authed_daemon.port, daemon_token=TOKEN)
     assert client.remote_virtuoso_pid is None
-    # The signed capability payload pre-populates the PID: no getpid()
+    # The signed capability payload pre-populates the PID: no ipcGetPid()
     # round trip is needed at all.
     assert client.execute_skill("1+1", timeout=5).status is ExecutionStatus.SUCCESS
     assert client.remote_virtuoso_pid == 424242
     assert client.get_virtuoso_pid(timeout=5) == 424242
-    assert not [r for r in authed_daemon.requests if r.get("skill", "").strip() == "getpid()"]
+    assert not [r for r in authed_daemon.requests if r.get("skill", "").strip() == "ipcGetPid()"]
 
 
 def test_client_pid_query_unauthenticated_is_rejected(authed_daemon) -> None:

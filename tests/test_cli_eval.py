@@ -26,6 +26,7 @@ class _FakeClient:
         self._result = result
         self.last_skill: str | None = None
         self.last_timeout: int | None = None
+        self.connection_timeout: int | None = None
 
     def execute_skill(self, skill_code: str, timeout=None):
         self.last_skill = skill_code
@@ -38,7 +39,8 @@ def _patch_client(monkeypatch, result: VirtuosoResult) -> _FakeClient:
 
     class _FakeVirtuosoClient:
         @classmethod
-        def from_env(cls, profile=None):
+        def from_env(cls, profile=None, timeout=30):
+            fake.connection_timeout = timeout
             return fake
 
     monkeypatch.setattr(virtuoso_bridge, "VirtuosoClient", _FakeVirtuosoClient)
@@ -129,11 +131,12 @@ def test_eval_passes_timeout(monkeypatch):
     rc = main(["eval", "1+1", "--timeout", "120", "--quiet"])
     assert rc == 0
     assert fake.last_timeout == 120
+    assert fake.connection_timeout == 120
 
 
 def test_eval_wraps_in_progn_for_multi_statement(monkeypatch):
-    """User shouldn't need to know the daemon wraps single-line input in
-    ``let(((__vb_r ...)))`` — multi-statement should Just Work.  We do
+    """Multi-statement input should Just Work, also against daemons from
+    older releases whose single-line path takes only one form.  We do
     this by always sending ``progn(\\n<user>\\n)``."""
     fake_result = VirtuosoResult(status=ExecutionStatus.SUCCESS, output='"ret"')
     fake = _patch_client(monkeypatch, fake_result)
@@ -169,3 +172,33 @@ def test_eval_trailing_line_comment_does_not_swallow_closing_paren(monkeypatch):
     assert rc == 0
     # The comment must be terminated by a newline before the closing `)`.
     assert fake.last_skill.endswith("\n)")
+
+
+def test_eval_stdout_is_only_json_while_env_and_ssh_echoes_go_to_stderr(
+    monkeypatch, capsys, tmp_path
+):
+    """``virtuoso-bridge eval ... | jq`` must parse: the .env banner and the
+    tunnel's ``[cmd]`` echoes are diagnostics and belong on stderr."""
+    from virtuoso_bridge import cli
+    from virtuoso_bridge.transport.ssh import SSHRunner
+
+    env_file = tmp_path / ".env"
+    fake = _FakeClient(VirtuosoResult(status=ExecutionStatus.SUCCESS, output="42"))
+
+    class _EchoingVirtuosoClient:
+        @classmethod
+        def from_env(cls, profile=None, timeout=30):
+            SSHRunner("eda-host", verbose=True)._print_cmd(["ssh", "eda-host", "cat", "token"])
+            return fake
+
+    monkeypatch.setattr(virtuoso_bridge, "VirtuosoClient", _EchoingVirtuosoClient)
+    monkeypatch.setattr(cli, "load_vb_env", lambda **_kwargs: env_file)
+    monkeypatch.setattr(cli, "_PRINTED_ENV_PATH", None)
+
+    rc = main(["eval", "x = 1 x + 41"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert json.loads(captured.out)["output"] == "42"
+    assert f"using .env: {env_file}" in captured.err
+    assert "[cmd] ssh eda-host cat token" in captured.err

@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import virtuoso_bridge
+from virtuoso_bridge import cli
 from virtuoso_bridge.cli import main
 from virtuoso_bridge.transport.ssh import CommandResult
 from virtuoso_bridge.virtuoso.basic.bridge import VirtuosoClient
@@ -133,6 +133,7 @@ def test_doc_search_cli_uses_bridge_when_no_doc_root(capsys, monkeypatch) -> Non
             limit: int = 10,
             rebuild_index: bool = False,
             cache_dir: str | Path | None = None,
+            progress=None,
         ):
             seen_calls.append((query, limit, rebuild_index))
             return {
@@ -151,7 +152,11 @@ def test_doc_search_cli_uses_bridge_when_no_doc_root(capsys, monkeypatch) -> Non
 
     seen_profiles: list[str | None] = []
     seen_calls: list[tuple[str, int, bool]] = []
-    monkeypatch.setattr(virtuoso_bridge, "VirtuosoClient", _FakeDocsClient)
+    # Documentation commands build their client without the daemon.
+    monkeypatch.setattr(
+        "virtuoso_bridge.cli._docs_client",
+        lambda: _FakeDocsClient.from_env(profile=cli._get_cli_profile()),
+    )
     monkeypatch.setattr("virtuoso_bridge.cli._load_cli_env", lambda: None)
     monkeypatch.setattr("virtuoso_bridge.profile.resolve_profile", lambda explicit=None: explicit)
 
@@ -364,12 +369,17 @@ def test_doc_search_cli_passes_rebuild_index(capsys, monkeypatch) -> None:
             limit: int = 10,
             rebuild_index: bool = False,
             cache_dir: str | Path | None = None,
+            progress=None,
         ):
             seen_calls.append((query, limit, rebuild_index))
             return {"doc_roots": ["/cad/ic/doc"], "results": []}
 
     seen_calls: list[tuple[str, int, bool]] = []
-    monkeypatch.setattr(virtuoso_bridge, "VirtuosoClient", _FakeDocsClient)
+    # Documentation commands build their client without the daemon.
+    monkeypatch.setattr(
+        "virtuoso_bridge.cli._docs_client",
+        lambda: _FakeDocsClient.from_env(profile=cli._get_cli_profile()),
+    )
     monkeypatch.setattr("virtuoso_bridge.cli._load_cli_env", lambda: None)
 
     rc = main(["doc-search", "net expression", "--rebuild-index", "--json"])
@@ -1023,6 +1033,7 @@ def test_client_doc_info_includes_ok_key_in_every_mode(tmp_path: Path, monkeypat
     monkeypatch.delenv("CDS_INST_DIR", raising=False)
     monkeypatch.delenv("CDSHOME", raising=False)
     monkeypatch.delenv("CDS_HOME", raising=False)
+    monkeypatch.setattr("virtuoso_bridge.virtuoso.skill_finder.SKILLFinder.discover", lambda *a, **k: None)
     fallback = VirtuosoClient.local().doc_info()
     assert fallback["ok"] is True
     assert fallback["doc_roots"] == []
@@ -1042,7 +1053,11 @@ def test_doc_info_cli_bridge_mode_json_schema_matches_local(tmp_path: Path, caps
         def doc_info(self):
             return {"ok": True, "doc_roots": local_infos}
 
-    monkeypatch.setattr(virtuoso_bridge, "VirtuosoClient", _FakeDocsClient)
+    # Documentation commands build their client without the daemon.
+    monkeypatch.setattr(
+        "virtuoso_bridge.cli._docs_client",
+        lambda: _FakeDocsClient.from_env(profile=cli._get_cli_profile()),
+    )
     monkeypatch.setattr("virtuoso_bridge.cli._load_cli_env", lambda: None)
     monkeypatch.setattr("virtuoso_bridge.profile.resolve_profile", lambda explicit=None: explicit)
 
@@ -1057,3 +1072,41 @@ def test_doc_info_cli_bridge_mode_json_schema_matches_local(tmp_path: Path, caps
     assert list(bridge_payload.keys()) == list(local_payload.keys()) == ["ok", "doc_roots"]
     assert bridge_payload["ok"] is local_payload["ok"] is True
     assert list(bridge_payload["doc_roots"][0].keys()) == list(local_payload["doc_roots"][0].keys())
+
+
+def test_first_index_build_reports_progress_and_cached_searches_do_not(tmp_path: Path) -> None:
+    # The first search of a real install took about a minute with no output.
+    doc_root = tmp_path / "doc"
+    doc_root.mkdir()
+    (doc_root / "guide.html").write_text(
+        "<html><title>Net Expression Guide</title><body>Use net expression labels.</body></html>",
+        encoding="utf-8",
+    )
+    cache_root = tmp_path / "cache"
+    messages: list[str] = []
+
+    first = search_docs("net expression", [doc_root], cache_root=cache_root, progress=messages.append)
+    assert first and len(messages) == 2
+    assert messages[0].startswith("Indexing Cadence documentation under ") and "first search" in messages[0]
+    assert messages[1].startswith("Indexed in ")
+
+    messages.clear()
+    assert search_docs("net expression", [doc_root], cache_root=cache_root, progress=messages.append)
+    assert messages == []
+
+
+def test_doc_search_cli_prints_progress_on_stderr_and_keeps_json_stdout(tmp_path, capsys) -> None:
+    from virtuoso_bridge import cli
+
+    doc_root = tmp_path / "doc"
+    doc_root.mkdir()
+    (doc_root / "guide.html").write_text(
+        "<html><title>Net Expression Guide</title><body>Use net expression labels.</body></html>",
+        encoding="utf-8",
+    )
+    rc = cli.main(["doc-search", "net expression", "--doc-root", str(doc_root),
+                   "--cache-dir", str(tmp_path / "cache"), "--json"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert json.loads(captured.out)["results"]
+    assert "Indexing Cadence documentation under" in captured.err

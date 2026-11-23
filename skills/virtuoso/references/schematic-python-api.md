@@ -50,6 +50,30 @@ Read a schematic through the same client-bound API:
 data = client.schematic.read(lib, cell, include_positions=False)
 ```
 
+### Inspect parameter evidence
+
+When a device has no explicit sizing properties, compare the stored instance
+properties with the values returned by its instance CDF in the same read:
+
+```python
+data = client.schematic.read(lib, cell, include_param_evidence=True)
+for inst in data["instances"]:
+    evidence = inst["param_evidence"]
+    print(inst["name"], evidence["stored"], evidence["cdf"])
+```
+
+`stored` contains the explicit instance property bag. `cdf` contains instance
+CDF values, or `None` when no instance CDF was available; an available CDF with
+zero parameters is `{}`. An absent property differs from a present property
+whose value is `None` (SKILL `nil`). Strings and lists are decoded, `t` becomes
+`True`, and other atoms remain text.
+
+Evidence is opt-in, unfiltered, and includes empty and long values that the
+compact `params` dictionary omits. `param_filters` continues to affect only
+`params`. Reading evidence runs no parameter callbacks and does not evaluate
+`iPar`/`pPar` expressions. A CDF value without an explicit property establishes
+what the CDF returned; confirm its origin and final netlisted value separately.
+
 ### Structured check/save diagnostics
 
 Use `check_and_save()` when automation needs the diagnostics from one explicit
@@ -82,6 +106,9 @@ never classifies stale CIW history. This path is verified against IC6.1.8 and
 uses long-standing public APIs also present in newer Virtuoso releases. If log
 capture is unavailable or a PDK checker bypasses `CDS.log`, the counts remain
 authoritative and the report says that per-message text is unavailable.
+`check_log_lines`/`save_log_lines` keep the raw lines with CDS.log's stream
+tag (`\o `, `\w `, `\e `); diagnostic messages drop the tag, and `\w`/`\e`
+lines without a severity word count as warnings/errors.
 
 If a modal blocks the SKILL event loop, the call reports `blocked` and lists
 the modal through read-only X11 discovery. It does not dismiss the dialog.
@@ -188,9 +215,57 @@ Use these with `sch.add(...)`:
 | `schematic_create_pin_at_instance_term(inst, term, pin, *, direction, orientation)` | `schCreatePin` at terminal center | Pin at terminal |
 | `schematic_create_wire_between_instance_terms(from_inst, from_term, to_inst, to_term)` | `schCreateWire` between terminal centers | Wire two terminals |
 | `schematic_label_instance_term(inst, term, net)` | Wire stub + label | Label terminal |
+| `schematic_wire_instance_terms_labeled(from_inst, from_term, to_inst, to_term, net)` | One wire + one label | Connect facing terminals of one net |
 | `schematic_create_net_stub(net, x, y, *, direction, length)` | wire + `schCreateWireLabel` | Short named electrical connection |
+| `pin_anchored_label_placement(x, y, direction)` | (Python only) | Label point, justification and rotation of the default convention |
 | `schematic_create_net_expression(net, expression, x, y)` | `schCreateNetExpression` | Attach inherited-connection expression |
 | `schematic_set_netset_property(instance, property, net)` | `dbReplaceProp` | Set an inherited-connection override |
+
+### Default wiring convention
+
+Schematics drawn through the bridge follow one convention, taken from
+hand-drawn cells:
+
+1. **Facing terminals of one net get one wire and one label.** When one
+   instance's terminal faces another's on the same net (a chain stage's
+   output and the next stage's input), draw a single wire between them with
+   `schematic_wire_instance_terms_labeled`. Do not label both terminals: the
+   net name would be printed twice on a short wire.
+2. **Every other terminal gets a 0.25 stub and a label at the terminal end.**
+   `schematic_label_instance_term` (default `cosmetic`) and
+   `schematic_create_net_stub` (default `label_anchor="start"`) place it:
+   - horizontal stub: text above the wire, `lowerLeft` when the stub runs
+     right and `lowerRight` when it runs left, at 0.4 × height along and
+     0.7 × height across from the terminal (0.025 / 0.04375 at the usual
+     0.0625 height);
+   - vertical stub: text rotated `R90` on the left of the wire, `lowerLeft`
+     going up and `lowerRight` going down.
+
+   Both helpers bind the offset label to the wire they create. For custom
+   dimensions, choose a stub longer than the along-wire offset.
+
+For example, a terminal at `(0.6875, 2.25)` with a stub to the right gets its
+label at `(0.7125, 2.29375)`, `lowerLeft`, `R0`; a supply pin at `(0, 3)` with
+a stub up gets `(-0.04375, 3.025)`, `lowerLeft`, `R90`.
+
+```python
+from virtuoso_bridge.virtuoso.schematic.ops import (
+    schematic_label_instance_term as label,
+    schematic_wire_instance_terms_labeled as wire_labeled,
+)
+
+with client.schematic.modify(LIB, "sar_logic") as sch:
+    # Bit 5's ENB_N drives bit 4's ENB_P: one wire, one label.
+    sch.add(wire_labeled("I3", "ENB_N", "I2", "ENB_P", "ENB_N<5>"))
+    # Outputs and supplies: stub + label at the terminal end.
+    sch.add(label("I3", "DOP", "DOP<5>"))
+    sch.add(label("I3", "VDD", "VDD"))
+```
+
+When a cell already uses another style, match it. `cosmetic="legacy"` gives
+the former default (`centerCenter` label on the stub midpoint). For a
+coordinate-based net stub, `label_anchor="midpoint"` also restores its
+former default length of 0.5.
 
 ## Netlist import and export
 
@@ -212,6 +287,29 @@ imported = client.schematic.import_netlist(
 )
 ```
 
+The export does not use the user's ADE project directory (`~/simulation` by
+default): it netlists in a new private (0700) directory under `/tmp` and
+removes it after the download, so the remote `source_file` and `source_dir` of
+a successful result no longer exist. On failure the directory is kept and its
+path is in the error. Pass `run_dir=` (an absolute path on the Virtuoso host)
+to keep the package; the result's `run_dir` names the directory used.
+
+`cell` names the subcircuit to import (spiceIn's import sub-circuit), so it
+must match a `subckt` / `.SUBCKT` name in the netlist; one call converts one
+subcircuit, so import a hierarchy leaf-first. Without `dev_map_file`, a default
+device map sends `resistor`/`capacitor`/`inductor` primitives to analogLib
+`res`/`cap`/`ind`; a map you pass replaces it (use one for PDK devices).
+
+With `overwrite=True` the import refuses a target schematic that is open for
+editing (for example in a window), before `spiceIn` runs: Virtuoso cannot copy
+over it. Close the window first; read-only opens do not block the import.
+
+By default `spiceIn` runs in a new private (0700) directory under `/tmp`,
+which is removed after a successful import, so the `spiceIn` paths in a
+successful result no longer exist. On failure the directory is kept and its
+path is in the error. Pass `run_dir=` to keep the files; the caller then owns
+that directory.
+
 For format and `spiceIn` limitations, see [netlist.md](netlist.md).
 
 ## Low-level SKILL builders
@@ -228,6 +326,7 @@ For format and `spiceIn` limitations, see [netlist.md](netlist.md).
 | `schematic_create_pin_at_instance_term(inst, term, pin)` | Terminal center lookup + `schCreatePin` |
 | `schematic_create_wire_between_instance_terms(from_inst, from_term, to_inst, to_term)` | Terminal center lookup + `schCreateWire` |
 | `schematic_label_instance_term(inst, term, net)` | Terminal center + MOS-aware stub + `schCreateWireLabel` |
+| `schematic_wire_instance_terms_labeled(from_inst, from_term, to_inst, to_term, net)` | Terminal centers + `schCreateWire` + one `schCreateWireLabel` |
 | `schematic_check()` | `schCheck(cv)` |
 
 ## Terminal-aware helpers
@@ -235,3 +334,5 @@ For format and `spiceIn` limitations, see [netlist.md](netlist.md).
 `add_wire_between_instance_terms` and `add_net_label_to_instance_term` resolve pin positions from the database — no need to guess coordinates.
 
 `add_net_label_to_transistor` is MOS-aware: it knows drain/source go up/down (flipped for PMOS), gate goes left, body goes right. The stub direction adapts to the transistor orientation.
+
+Terminal names are matched case-insensitively (`D` or `d`). The body is labelled on a `B`, `BULK`, `BODY` or `SUB` terminal and skipped on a symbol without one, such as a 3-terminal device whose body comes from its model. For other names pass `terminal_names={"B": "sx"}`. `schematic_label_instance_term` matches names the same way and its error lists the master's terminals.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -15,8 +16,11 @@ from pathlib import Path, PurePosixPath
 from typing import Any, TypedDict
 
 from virtuoso_bridge.models import ExecutionStatus
+from virtuoso_bridge.transport.remote_paths import private_dir_shell_prelude
 from virtuoso_bridge.virtuoso.ops import escape_skill_string
 from virtuoso_bridge.virtuoso.skill_output import parse_sexpr
+
+logger = logging.getLogger(__name__)
 
 _SKILL_SYMBOL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -28,6 +32,7 @@ class SchematicNetlistExportResult(TypedDict):
     source_dir: str
     output_dir: str
     input_file: str
+    run_dir: str
     skill_result: Any
     download_result: Any
 
@@ -127,6 +132,7 @@ def schematic_export_netlist_skill(
     view: str = "schematic",
     simulator: str = "spectre",
     recreate_all: bool = True,
+    project_dir: str | None = None,
 ) -> str:
     """Build SKILL to create a schematic netlist and return ``input.scs``.
 
@@ -135,18 +141,41 @@ def schematic_export_netlist_skill(
     generated simulator input file. The Python wrapper downloads the
     containing netlist directory so adjacent includes such as ``ade_e.scs``
     stay with ``input.scs``.
+
+    OCEAN writes the package to ``<projectDir>/<cell>/<simulator>/<view>/netlist``,
+    where ``projectDir`` is the ``asimenv.startup`` setting (``~/simulation``
+    by default), and reads that setting when ``simulator()`` starts the
+    session. With ``project_dir`` the setting points there only while
+    ``simulator()`` runs and is restored right after, also on error, so the
+    netlist lands in ``project_dir`` and the user's own setting is unchanged.
     """
     escaped_lib = escape_skill_string(lib)
     escaped_cell = escape_skill_string(cell)
     escaped_view = escape_skill_string(view)
     simulator_symbol = _skill_symbol(simulator, name="simulator")
     recreate = _skill_bool(recreate_all)
+    simulate = f"errset(simulator({simulator_symbol}) nil)"
+    if project_dir is None:
+        start = f"vbSimResult = {simulate} "
+    else:
+        # OCEAN reads projectDir when simulator() starts the session, so the
+        # redirect covers that call only and is undone even when it fails.
+        project = escape_skill_string(project_dir)
+        start = (
+            'vbProjectDir = envGetVal("asimenv.startup" "projectDir") '
+            'unless(stringp(vbProjectDir) error("cannot read asimenv.startup projectDir")) '
+            "vbSimResult = unwindProtect("
+            f'progn(unless(envSetVal("asimenv.startup" "projectDir" \'string "{project}") '
+            'error("cannot set asimenv.startup projectDir")) '
+            f"{simulate}) "
+            'envSetVal("asimenv.startup" "projectDir" \'string vbProjectDir)) '
+        )
     return (
-        "let((vbSimResult vbDesignResult vbNetlistResult vbSourceFile) "
+        "let((vbSimResult vbDesignResult vbNetlistResult vbSourceFile vbProjectDir) "
         "unless(and(isCallable('simulator) isCallable('design) "
         "isCallable('createNetlist) isCallable('simplifyFilename)) "
         'error("netlist API unavailable")) '
-        f"vbSimResult = errset(simulator({simulator_symbol}) nil) "
+        f"{start}"
         'unless(vbSimResult && car(vbSimResult) error("simulator failed")) '
         f'vbDesignResult = errset(design("{escaped_lib}" "{escaped_cell}" "{escaped_view}" "r") nil) '
         'unless(vbDesignResult && car(vbDesignResult) error("design failed")) '
@@ -168,6 +197,7 @@ def export_schematic_netlist(
     view: str = "schematic",
     simulator: str = "spectre",
     recreate_all: bool = True,
+    run_dir: str | Path | None = None,
     timeout: int = 120,
 ) -> SchematicNetlistExportResult:
     """Export a schematic netlist package to ``output_dir``.
@@ -177,19 +207,62 @@ def export_schematic_netlist(
     Existing ``output_dir`` contents are replaced only after the new package
     has downloaded and the expected input file is present.
 
+    OCEAN netlists into a project directory on the Virtuoso host (the user's
+    ``asimenv.startup`` ``projectDir``, ``~/simulation`` by default). Without
+    ``run_dir`` the export uses a new private (0700) directory under ``/tmp``
+    instead and removes it after a successful download, so it neither leaves
+    a ``<projectDir>/<cell>`` tree behind nor rewrites the netlist of the
+    user's own ADE setup for that cell; the remote ``source_file`` and
+    ``source_dir`` of a successful result then no longer exist. On failure
+    the directory is kept and its path is added to the error (logged as a
+    warning for errors other than ``RuntimeError``). Pass ``run_dir`` (an
+    absolute path on the Virtuoso host) to keep the package there; the caller
+    then owns that directory.
+
     Returns a dictionary with:
     ``source_file`` (Virtuoso host ``input.scs``), ``source_dir`` (Virtuoso
     host netlist package directory), ``output_dir`` (local package directory),
-    ``input_file`` (downloaded local simulator input), ``skill_result``, and
+    ``input_file`` (downloaded local simulator input), ``run_dir`` (the
+    Virtuoso host project directory used), ``skill_result``, and
     ``download_result``.
     """
+    if run_dir is not None and not PurePosixPath(str(run_dir)).is_absolute():
+        raise ValueError(f"run_dir must be an absolute path on the Virtuoso host: {run_dir}")
+    resolved_run_dir = _resolve_run_dir(run_dir, lib, cell, purpose="export")
     skill = schematic_export_netlist_skill(
         lib,
         cell,
         view=view,
         simulator=simulator,
         recreate_all=recreate_all,
+        project_dir=resolved_run_dir,
     )
+    runner = getattr(client, "ssh_runner", None)
+    # Only the default run directory is the export's to create and remove.
+    owned_run_dir = run_dir is None
+    _create_run_dir(runner, resolved_run_dir, owned=owned_run_dir, timeout=timeout, label="netlist export")
+    try:
+        result = _export_into_run_dir(client, skill, resolved_run_dir, output_dir, timeout=timeout)
+    except BaseException as exc:
+        note = f"netlist export files kept in {resolved_run_dir}"
+        if type(exc) is RuntimeError:
+            raise RuntimeError(f"{exc}\n{note}") from exc
+        logger.warning("%s", note)
+        raise
+    if owned_run_dir:
+        _remove_run_dir(runner, resolved_run_dir, timeout=timeout, label="netlist export",
+                        keep=_NETLISTER_PROCESS_FILE)
+    return result
+
+
+def _export_into_run_dir(
+    client: Any,
+    skill: str,
+    run_dir: str,
+    output_dir: str | Path,
+    *,
+    timeout: int,
+) -> SchematicNetlistExportResult:
     skill_result = client.execute_skill(skill, timeout=timeout)
     if not _result_ok(skill_result):
         errors = "; ".join(_result_errors(skill_result)) or "createNetlist failed"
@@ -203,6 +276,14 @@ def export_schematic_netlist(
     if not source_path.is_absolute():
         raise RuntimeError(f"createNetlist returned relative netlist path: {source_file}")
     source_dir = source_path.parent.as_posix()
+    if not source_path.is_relative_to(PurePosixPath(run_dir)):
+        # A Virtuoso that ignores the projectDir redirect netlists into the
+        # user's own project directory: export from there, but touch nothing.
+        logger.warning(
+            "createNetlist wrote %s outside the export run directory %s; it was left in place",
+            source_dir,
+            run_dir,
+        )
     destination = Path(output_dir)
     tmp_destination = destination.with_name(
         f".{destination.name}.tmp-{uuid.uuid4().hex}"
@@ -237,6 +318,7 @@ def export_schematic_netlist(
         "source_dir": source_dir,
         "output_dir": str(destination),
         "input_file": str(destination / "input.scs"),
+        "run_dir": run_dir,
         "skill_result": skill_result,
         "download_result": download_result,
     }
@@ -287,10 +369,15 @@ def schematic_import_netlist_skill(
             f'"{escaped_spicein_log}"))'
         )
 
+    # Failures are recorded in vbFailure and raised only after cleanup: an
+    # error raised inside unwindProtect reaches the bridge as "nil" once the
+    # cleanup's own errset has reset errset.errset.
     return (
-        "let((vbSchematicObj vbNetlistObj vbTempObj vbTempCv vbConnOk vbCopyOk vbDestViewName) "
+        "let((vbSchematicObj vbNetlistObj vbTempObj vbTempCv vbConnOk vbCopyOk vbDestViewName "
+        "vbFailure) "
         f'when("{escaped_netlist_view}" == "{escaped_schematic_view}" '
         'error("netlist and schematic views must differ")) '
+        f"{_target_open_check_skill(lib, cell, schematic_view)} "
         f'vbSchematicObj = ddGetObj("{escaped_lib}" "{escaped_cell}" "{escaped_schematic_view}") '
         "when(vbSchematicObj "
         "ddReleaseObj(vbSchematicObj)) "
@@ -300,25 +387,56 @@ def schematic_import_netlist_skill(
         f'vbNetlistObj = ddGetObj("{escaped_lib}" "{escaped_cell}" "{escaped_netlist_view}") '
         'unless(vbNetlistObj error("source netlist view not found")) '
         "unless(isCallable('conn2Sch) error(\"conn2Sch API unavailable\")) "
-        "unwindProtect("
-        "progn("
+        "unless(isCallable('dbCopyCellView) error(\"dbCopyCellView API unavailable\")) "
         f'vbConnOk = errset(conn2Sch("{escaped_lib}" "{escaped_cell}" "{escaped_netlist_view}" '
         f'?destLibName "{escaped_lib}" ?destCellName "{escaped_cell}" '
         '?destViewName vbDestViewName ?block t) nil) '
-        'unless(vbConnOk && car(vbConnOk) error("conn2Sch failed")) '
-        "unless(isCallable('dbCopyCellView) error(\"dbCopyCellView API unavailable\")) "
-        f'vbTempCv = dbOpenCellViewByType("{escaped_lib}" "{escaped_cell}" vbDestViewName "schematic" "r") '
-        'unless(vbTempCv error("temporary schematic open failed")) '
-        f'vbCopyOk = dbCopyCellView(vbTempCv "{escaped_lib}" "{escaped_cell}" "{escaped_schematic_view}" nil nil t) '
-        'unless(vbCopyOk error("target schematic copy failed")) '
-        ") "
-        "progn("
+        'unless(vbConnOk && car(vbConnOk) vbFailure = "conn2Sch failed") '
+        "unless(vbFailure "
+        f'vbTempCv = car(errset(dbOpenCellViewByType("{escaped_lib}" "{escaped_cell}" vbDestViewName '
+        '"schematic" "r") nil)) '
+        'unless(vbTempCv vbFailure = "temporary schematic open failed")) '
+        "unless(vbFailure "
+        f'vbCopyOk = car(errset(dbCopyCellView(vbTempCv "{escaped_lib}" "{escaped_cell}" '
+        f'"{escaped_schematic_view}" nil nil t) nil)) '
+        'unless(vbCopyOk vbFailure = "target schematic copy failed")) '
         "when(vbTempCv when(isCallable('dbClose) dbClose(vbTempCv)) vbTempCv = nil) "
         f'vbTempObj = ddGetObj("{escaped_lib}" "{escaped_cell}" vbDestViewName) '
-        "when(vbTempObj errset(ddDeleteObj(vbTempObj) nil)))) "
+        "when(vbTempObj errset(ddDeleteObj(vbTempObj) nil)) "
+        "when(vbFailure error(vbFailure)) "
         f'list("imported" "{escaped_lib}" "{escaped_cell}" "{escaped_param_file}" '
         f'"{escaped_spicein_log}"))'
     )
+
+
+def _target_open_check_skill(lib: str, cell: str, view: str) -> str:
+    """SKILL that refuses to overwrite a cellview open for editing.
+
+    dbCopyCellView cannot replace a cellview open in edit mode: it returns
+    nil, after spiceIn has already rewritten the netlist view. Read-only
+    opens do not block the copy.
+    """
+    escaped_lib = escape_skill_string(lib)
+    escaped_cell = escape_skill_string(cell)
+    escaped_view = escape_skill_string(view)
+    message = escape_skill_string(
+        f"target {lib}/{cell}/{view} is open for editing in Virtuoso; close it before overwriting"
+    )
+    return (
+        "when(setof(vbOpenCv dbGetOpenCellViews() "
+        f'vbOpenCv~>libName == "{escaped_lib}" && vbOpenCv~>cellName == "{escaped_cell}" '
+        f'&& vbOpenCv~>viewName == "{escaped_view}" && vbOpenCv~>mode != "r") '
+        f'error("{message}"))'
+    )
+
+
+# Used when the caller gives no device map: maps the plain Spectre/SPICE
+# primitives to analogLib, without which spiceIn stops with SPICEIN-24.
+DEFAULT_DEVICE_MAP = (
+    "devselect := resistor res\n"
+    "devselect := capacitor cap\n"
+    "devselect := inductor ind\n"
+)
 
 
 def import_netlist_schematic(
@@ -340,13 +458,36 @@ def import_netlist_schematic(
 ) -> Any:
     """Import a netlist into a schematic view through shell ``spiceIn`` + SKILL.
 
+    ``cell`` names the subcircuit to import (spiceIn's importSubList), so it
+    must match a ``subckt``/``.SUBCKT`` name in the netlist; import a
+    hierarchy leaf-first, one call per subcircuit. Without ``dev_map_file``,
+    :data:`DEFAULT_DEVICE_MAP` maps resistor/capacitor/inductor primitives to
+    analogLib; a given map replaces it.
+
     ``spiceIn`` is run outside the CIW SKILL channel, matching the project
     guidance for Cadence tools that may launch their own Virtuoso process.
     The live SKILL bridge is used for environment discovery, preflight checks,
     and the final ``conn2Sch`` database conversion.
+
+    Without ``run_dir``, ``spiceIn`` runs in a new private (0700) directory
+    under ``/tmp`` that is removed after a successful import, so the
+    ``spiceIn`` paths in a successful result no longer exist. On failure it is
+    kept and its path is added to the error (logged as a warning for errors
+    other than ``RuntimeError``). Pass ``run_dir`` to keep the files; the
+    caller then owns that directory.
     """
+    if dev_map_file is None:
+        with tempfile.TemporaryDirectory(prefix="vb-devmap-") as stage:
+            default_map = Path(stage) / "default.devmap"
+            default_map.write_text(DEFAULT_DEVICE_MAP, encoding="utf-8")
+            return import_netlist_schematic(
+                client, lib, cell, netlist_file,
+                language=language, sim_name=sim_name, output_sim_name=output_sim_name,
+                ref_libs=ref_libs, netlist_view=netlist_view, schematic_view=schematic_view,
+                overwrite=overwrite, dev_map_file=default_map, run_dir=run_dir, timeout=timeout,
+            )
     context = _netlist_import_context(client, timeout=timeout)
-    resolved_run_dir = _resolve_import_run_dir(run_dir, lib, cell)
+    resolved_run_dir = _resolve_run_dir(run_dir, lib, cell)
     preflight = client.execute_skill(
         _schematic_import_preflight_skill(
             lib,
@@ -360,52 +501,69 @@ def import_netlist_schematic(
     _require_result_ok(preflight, "netlist import preflight failed")
 
     runner = getattr(client, "ssh_runner", None)
-    if runner is None:
-        paths = _run_spicein_local(
-            context,
-            lib,
-            cell,
-            netlist_file,
-            language=language,
-            sim_name=sim_name,
-            output_sim_name=output_sim_name,
-            ref_libs=ref_libs,
-            netlist_view=netlist_view,
-            overwrite=overwrite,
-            dev_map_file=dev_map_file,
-            run_dir=resolved_run_dir,
-            timeout=timeout,
-        )
-    else:
-        paths = _run_spicein_remote(
-            client,
-            runner,
-            context,
-            lib,
-            cell,
-            netlist_file,
-            language=language,
-            sim_name=sim_name,
-            output_sim_name=output_sim_name,
-            ref_libs=ref_libs,
-            netlist_view=netlist_view,
-            overwrite=overwrite,
-            dev_map_file=dev_map_file,
-            run_dir=resolved_run_dir,
-            timeout=timeout,
-        )
+    # The import owns (creates privately, then removes) only the default run
+    # directory; a caller-given run_dir is the caller's to keep.
+    owned_run_dir = run_dir is None
+    _create_run_dir(runner, resolved_run_dir, owned=owned_run_dir, timeout=timeout)
+    try:
+        if runner is None:
+            paths = _run_spicein_local(
+                context,
+                lib,
+                cell,
+                netlist_file,
+                language=language,
+                sim_name=sim_name,
+                output_sim_name=output_sim_name,
+                ref_libs=ref_libs,
+                netlist_view=netlist_view,
+                overwrite=overwrite,
+                dev_map_file=dev_map_file,
+                run_dir=resolved_run_dir,
+                timeout=timeout,
+            )
+        else:
+            paths = _run_spicein_remote(
+                client,
+                runner,
+                context,
+                lib,
+                cell,
+                netlist_file,
+                language=language,
+                sim_name=sim_name,
+                output_sim_name=output_sim_name,
+                ref_libs=ref_libs,
+                netlist_view=netlist_view,
+                overwrite=overwrite,
+                dev_map_file=dev_map_file,
+                run_dir=resolved_run_dir,
+                timeout=timeout,
+            )
 
-    skill = schematic_import_netlist_skill(
-        lib,
-        cell,
-        netlist_view=netlist_view,
-        schematic_view=schematic_view,
-        overwrite=overwrite,
-        param_file=paths["param_file"],
-        spicein_log_file=paths["spicein_log_file"],
-    )
-    result = client.execute_skill(skill, timeout=timeout)
-    _require_result_ok(result, "netlist import conversion failed")
+        skill = schematic_import_netlist_skill(
+            lib,
+            cell,
+            netlist_view=netlist_view,
+            schematic_view=schematic_view,
+            overwrite=overwrite,
+            param_file=paths["param_file"],
+            spicein_log_file=paths["spicein_log_file"],
+        )
+        result = client.execute_skill(skill, timeout=timeout)
+        _require_result_ok(result, "netlist import conversion failed")
+    except BaseException as exc:
+        # Keep the files for diagnosis and say where they are. Only a plain
+        # RuntimeError is rewrapped; other types (TimeoutExpired, interrupts)
+        # are re-raised unchanged so callers can still match them.
+        note = f"netlist import files kept in {resolved_run_dir}"
+        if type(exc) is RuntimeError:
+            raise RuntimeError(f"{exc}\n{note}") from exc
+        logger.warning("%s", note)
+        raise
+
+    if owned_run_dir:
+        _remove_run_dir(runner, resolved_run_dir, timeout=timeout)
     return result
 
 
@@ -499,6 +657,7 @@ def _schematic_import_preflight_skill(
         "let((vbSchematicObj vbNetlistObj) "
         f'when("{escaped_netlist_view}" == "{escaped_schematic_view}" '
         'error("netlist and schematic views must differ")) '
+        f"{_target_open_check_skill(lib, cell, schematic_view) if overwrite else ''} "
         f'vbSchematicObj = ddGetObj("{escaped_lib}" "{escaped_cell}" "{escaped_schematic_view}") '
         "when(vbSchematicObj "
         f'if({_skill_bool(overwrite)} then ddReleaseObj(vbSchematicObj) '
@@ -549,7 +708,6 @@ def _run_spicein_local(
     timeout: int,
 ) -> dict[str, str]:
     run_path = Path(run_dir).expanduser().resolve()
-    run_path.mkdir(parents=True, exist_ok=True)
     netlist_path = _local_input_path(netlist_file, run_path)
     dev_map_path = "" if dev_map_file is None else _local_input_path(dev_map_file, run_path)
     paths = _import_paths(str(run_path))
@@ -604,8 +762,6 @@ def _run_spicein_remote(
     timeout: int,
 ) -> dict[str, str]:
     run_dir_text = str(run_dir)
-    mkdir_result = runner.run_command(f"mkdir -p {shlex.quote(run_dir_text)}", timeout=timeout)
-    _require_command_ok(mkdir_result, "cannot create netlist import run directory")
     paths = _import_paths(run_dir_text)
     inputs_dir = _input_stage_dir(run_dir_text)
     mkdir_inputs_result = runner.run_command(f"mkdir -p {shlex.quote(inputs_dir)}", timeout=timeout)
@@ -671,13 +827,110 @@ def _input_stage_dir(run_dir: str) -> str:
     return f"{run_dir.rstrip('/')}/inputs"
 
 
-def _resolve_import_run_dir(run_dir: str | Path | None, lib: str, cell: str) -> str:
+def _resolve_run_dir(run_dir: str | Path | None, lib: str, cell: str, *, purpose: str = "import") -> str:
     if run_dir is not None:
         return str(run_dir)
     return (
-        f"/tmp/virtuoso_bridge_netlist_import_"
+        f"/tmp/virtuoso_bridge_netlist_{purpose}_"
         f"{_safe_path_segment(lib)}_{_safe_path_segment(cell)}_{uuid.uuid4().hex}"
     )
+
+
+def _create_run_dir(
+    runner: Any, run_dir: str, *, owned: bool, timeout: int, label: str = "netlist import"
+) -> None:
+    """Create the run directory before anything is staged in it.
+
+    An owned (default) directory must be new and private: on a shared /tmp
+    another user must not be able to pre-create, redirect or read it. A
+    caller-given directory may already exist.
+    """
+    if runner is None:
+        if owned:
+            os.mkdir(run_dir, 0o700)
+        else:
+            Path(run_dir).expanduser().resolve().mkdir(parents=True, exist_ok=True)
+        return
+    command = (
+        _remote_run_dir_create_command(run_dir, label) if owned else f"mkdir -p {shlex.quote(run_dir)}"
+    )
+    result = runner.run_command(command, timeout=timeout)
+    _require_command_ok(result, f"cannot create {label} run directory")
+
+
+# The first netlist run of a Virtuoso process creates this (empty) file in its
+# ihnl directory, and every later run in that process, the user's own ADE runs
+# included, appends to that same path; the netlister keeps it in compiled code,
+# out of SKILL's reach (IC 23.1). Deleting it makes each later run warn
+# OSSHNL-941, so an export directory keeps this one file (and its parents).
+_NETLISTER_PROCESS_FILE = "sameCellNamesInMultipleLibs"
+
+
+def _remove_run_dir(
+    runner: Any, run_dir: str, *, timeout: int, label: str = "netlist import", keep: str | None = None,
+) -> None:
+    """Remove an owned run directory; a failure only logs a warning.
+
+    Files named *keep* survive, with their parent directories; the rest goes.
+    """
+    try:
+        if runner is None:
+            if keep is None:
+                shutil.rmtree(run_dir)
+            else:
+                _remove_tree_keeping(Path(run_dir), keep)
+        else:
+            result = runner.run_command(_remote_run_dir_remove_command(run_dir, label, keep), timeout=timeout)
+            _require_command_ok(result, f"cannot remove {label} run directory")
+    except Exception as exc:
+        logger.warning("%s run directory %s was not removed: %s", label, run_dir, exc)
+
+
+def _remote_run_dir_create_command(run_dir: str, label: str = "netlist import") -> str:
+    """Shell that creates *run_dir* mode 700; fails if the path already exists."""
+    quoted = shlex.quote(run_dir)
+    return (
+        f"{private_dir_shell_prelude(label)}"
+        f"mkdir -m 700 {quoted} || exit $?\n"
+        f"vb_verify_dir {quoted} || exit $?\n"
+    )
+
+
+def _remote_run_dir_remove_command(run_dir: str, label: str = "netlist import", keep: str | None = None) -> str:
+    """Shell that removes *run_dir* only if it is still the user's private directory.
+
+    With *keep*, files of that name stay; directories left empty are removed.
+    """
+    quoted = shlex.quote(run_dir)
+    if keep is None:
+        remove = f"rm -rf {quoted}\n"
+    else:
+        remove = (
+            f"find {quoted} ! -type d ! -name {shlex.quote(keep)} -exec rm -f {{}} + || exit $?\n"
+            f"find {quoted} -depth -type d -empty -exec rmdir {{}} \\;\n"
+        )
+    return (
+        f"{private_dir_shell_prelude(label)}"
+        f"vb_verify_dir {quoted} || exit $?\n"
+        f"{remove}"
+    )
+
+
+def _remove_tree_keeping(root: Path, keep: str) -> None:
+    """Delete *root* except files named *keep*, which keep their parents."""
+    for directory, dirs, files in os.walk(root, topdown=False):
+        base = Path(directory)
+        for name in files:
+            if name != keep:
+                (base / name).unlink()
+        for name in dirs:
+            path = base / name
+            if path.is_symlink():
+                path.unlink()
+            elif not any(path.iterdir()):
+                path.rmdir()
+    if not any(root.iterdir()):
+        root.rmdir()
 
 
 def _safe_path_segment(value: str) -> str:

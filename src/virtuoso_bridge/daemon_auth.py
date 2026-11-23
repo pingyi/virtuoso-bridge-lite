@@ -25,6 +25,9 @@ Scheme (wire protocol v1)
   Request:  ``mac = HMAC(token, frame("vb1-request", proto, nonce,
   timeout, skill))`` — the whole request is authenticated, not just the
   nonce, so no field can be swapped in flight.
+  Instance-bound execution: ``op=execute`` uses ``frame("vb1-execute",
+  proto, nonce, daemon_instance, timeout, skill)``. The daemon checks its
+  instance before dispatch, including when a port was reused after hello.
   Response: ``mac = HMAC(token, frame("vb1-response", nonce, marker,
   body))`` — the status marker *and* the full body are authenticated.
   Handshake: ``mac = HMAC(token, frame("vb1-hello", proto, nonce))``.
@@ -44,7 +47,9 @@ from __future__ import annotations
 import errno
 import hashlib
 import hmac
+import json
 import os
+import re
 import secrets
 import tempfile
 from pathlib import Path
@@ -227,6 +232,77 @@ def local_token_or_raise(path: str | Path | None = None) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Local cache of remote daemons (token and verified identity)
+# ---------------------------------------------------------------------------
+
+REMOTE_CACHE_DIRNAME = "remote_daemons"
+
+
+def _remote_cache_root() -> Path:
+    return Path.home() / TOKEN_DIRNAME / REMOTE_CACHE_DIRNAME
+
+
+def remote_cache_path(daemon_host: str, remote_user: str | None) -> Path:
+    """Cache file for one remote daemon endpoint.
+
+    It saves each new client an SSH round trip for the token and another for
+    the daemon owner; see :func:`read_remote_cache` for when it is trusted.
+    """
+    key = re.sub(r"[^A-Za-z0-9._@-]", "_", f"{remote_user or ''}@{daemon_host}")[:128]
+    return _remote_cache_root() / f"{key}.json"
+
+
+def read_remote_cache(path: str | Path) -> dict:
+    """The cached entry, or {} when absent, malformed or not private.
+
+    On POSIX the file must belong to this user and be unreadable by others;
+    anything else is ignored so the caller falls back to SSH.
+    """
+    path = Path(path)
+    try:
+        info = os.stat(path)
+        if os.name != "nt" and (info.st_uid != os.getuid() or info.st_mode & 0o077):
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def update_remote_cache(path: str | Path, **fields: object) -> None:
+    """Merge *fields* into the cache file (0600 under 0700); None removes a
+    field. Best effort: the cache only saves time, so failures are ignored."""
+    path = Path(path)
+    data = read_remote_cache(path)
+    for key, value in fields.items():
+        if value is None:
+            data.pop(key, None)
+        else:
+            data[key] = value
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _chmod_dir_0700(path.parent.parent)
+        _chmod_dir_0700(path.parent)
+        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".cache.", suffix=".tmp")
+        try:
+            try:
+                os.fchmod(fd, 0o600)
+            except (OSError, AttributeError):
+                pass  # Windows: mode is advisory; directory ACL applies
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(data, handle)
+            os.replace(tmp_name, path)
+        except OSError:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Canonical frames and MACs
 # ---------------------------------------------------------------------------
 
@@ -276,6 +352,17 @@ def hello_mac(token: str, *, nonce: str, proto: int = PROTOCOL_VERSION) -> str:
     return _mac_hex(token, _HELLO_DOMAIN, str(int(proto)), nonce)
 
 
+def bound_request_mac(
+    token: str, *, nonce: str, daemon_instance: str, skill: str,
+    timeout: float, proto: int = PROTOCOL_VERSION,
+) -> str:
+    """Bind ordinary execution to the daemon authenticated by hello."""
+    return _mac_hex(
+        token, "vb1-execute", str(int(proto)), nonce, daemon_instance,
+        format_timeout(timeout), skill,
+    )
+
+
 def recoverable_mac(
     token: str, *, nonce: str, op: str, request_id: str,
     daemon_instance: str, skill: str = "", proto: int = PROTOCOL_VERSION,
@@ -321,8 +408,9 @@ def is_valid_nonce(nonce: str | None) -> bool:
 
 _LEGACY_DAEMON_MSG = (
     "daemon did not authenticate its response — it predates bridge "
-    "token auth or runs with auth disabled; run `virtuoso-bridge "
-    "restart` (or re-load virtuoso_setup.il in the CIW) to upgrade it"
+    "token auth or runs with auth disabled; prepare an updated setup, then in "
+    "the intended idle CIW call RBStop(), wait for the tracked child to exit, "
+    "and load the prepared setup. A plain restart does not deploy files or reload the setup"
 )
 
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import errno
 import json
 import logging
@@ -9,11 +11,12 @@ import math
 import os
 import re
 import secrets
+import shlex
 import socket
 import hashlib
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from virtuoso_bridge.env import load_vb_env
 from virtuoso_bridge import daemon_auth
@@ -22,10 +25,12 @@ from virtuoso_bridge.virtuoso.basic.composition import compose_skill_script
 from virtuoso_bridge.models import ExecutionStatus, VirtuosoInterface, VirtuosoResult
 from virtuoso_bridge.virtuoso.ops import (
     close_current_cellview as op_close_current_cellview,
+    close_windows as op_close_windows,
     default_view_type_for,
     escape_skill_string,
     open_cell_view as op_open_cell_view,
     open_window as op_open_window,
+    request_exit as op_request_exit,
     save_current_cellview as op_save_current_cellview,
 )
 from virtuoso_bridge.virtuoso.layout import LayoutOps
@@ -39,19 +44,34 @@ _STX = "\x02"
 _NAK = "\x15"
 _RECV_BUF_SIZE = 1024 * 1024
 _TUNNEL_CONNECT_RETRY_DELAY = 0.2
+# The daemon refuses these before transmitting anything, so resending is
+# safe: another request holds the single IPC lane, or too many clients are
+# connected. A poisoned/resyncing lane means the CIW is stuck and is not
+# retried; waiting would only use up the caller's timeout.
+_RETRYABLE_BUSY_ERRORS = (
+    "BusyError: IPC lane is busy",
+    "BusyError: daemon connection limit reached",
+)
+_BUSY_RETRY_FIRST_DELAY = 0.1
+_BUSY_RETRY_MAX_DELAY = 1.0
 _TUNNEL_CONNECT_GRACE_SECONDS = 3.0
+# Documentation fallback: a running Virtuoso is asked for its install root
+# only when SSH discovery finds nothing, and never waits long for it.
+_INSTALL_ROOT_QUERY_TIMEOUT = 5.0
+_UNSET: Any = object()
 
 
-def _default_remote_port(username: str | None = None) -> int:
-    """Return a stable per-user default port in the range 65000-65499.
+def _default_remote_port(
+    username: str | None = None, *, environ: Mapping[str, str] | None = None,
+) -> int:
+    """Stable legacy/local-forward default; automatic daemons use bind(0).
 
-    SHA-1 based: the previous ``sum(ord(c)) % 500`` assigned identical ports
-    to any anagram pair (and collided often on shared EDA hosts), which made
-    cross-user daemon squatting trivial.  Deployment-time occupancy probing
-    (SSHClient.ensure_remote_setup) additionally shifts away ports already
-    held by another user.
+    SHA-1 provides a deterministic username mapping across Python processes,
+    unlike hash(). The small range reduces accidental account collisions;
+    it is neither a reservation nor an authentication boundary.
     """
-    user = username or os.getenv("VB_REMOTE_USER", "").strip()
+    values = os.environ if environ is None else environ
+    user = username or values.get("VB_REMOTE_USER", "").strip()
     if not user:
         return 65432
     digest = hashlib.sha1(user.encode("utf-8")).hexdigest()
@@ -80,6 +100,21 @@ def _acquire_daemon_token(ssh: Any) -> str | None:
     return daemon_auth.local_token_or_raise()
 
 
+def _same_verified_daemon(verified: Any, caps: dict[str, Any]) -> bool:
+    """Whether signed capabilities name the daemon instance verified before.
+
+    ``daemon_instance`` is random per daemon start, so a restarted or
+    different daemon never matches and is checked again.
+    """
+    return (
+        isinstance(verified, dict)
+        and bool(caps.get("daemon_instance"))
+        and verified.get("daemon_instance") == caps.get("daemon_instance")
+        and verified.get("virtuoso_pid") == caps.get("virtuoso_pid")
+        and bool(verified.get("daemon_user"))
+    )
+
+
 def _escape_skill_string(s: str) -> str:
     return escape_skill_string(s)
 
@@ -96,6 +131,61 @@ def _escape_for_skill_evalstring_source(s: str) -> str:
 # ---------------------------------------------------------------------------
 # VirtuosoClient — pure SKILL execution client
 # ---------------------------------------------------------------------------
+
+
+def _skill_error_text(payload: str) -> str:
+    """Cadence's error message from the daemon's ``errset.errset`` reply.
+
+    The CIW handler reports a failed request as ``errset.errset`` printed
+    with ``%L``, e.g. ``("car" 0 t nil ("*Error* car: argument #1 should be
+    a list ..." 1))``. Its fifth element holds the message and the offending
+    arguments; the result reads like the CIW: ``car: argument #1 should be a
+    list ... - 1``. Other replies are returned unchanged.
+    """
+    from virtuoso_bridge.virtuoso.skill_output import is_single_complete_skill_list, parse_sexpr
+
+    if not is_single_complete_skill_list(payload):
+        return payload
+    try:
+        parsed = parse_sexpr(payload)
+    except ValueError:
+        return payload
+    if not isinstance(parsed, list) or len(parsed) != 5:
+        return payload
+    detail = parsed[4]
+    if not isinstance(detail, list) or not detail or not isinstance(detail[0], str):
+        return payload
+    message = detail[0]
+    if message.startswith("*Error* "):
+        message = message[len("*Error* "):]
+    arguments = " ".join(_skill_value_text(value) for value in detail[1:])
+    return f"{message} - {arguments}" if arguments else message
+
+
+def _install_root_from_skill_output(output: str | None) -> str | None:
+    """The absolute path printed for ``cdsGetInstPath()``, or None."""
+    from virtuoso_bridge.virtuoso.skill_output import parse_skill_str_list
+
+    try:
+        values = parse_skill_str_list(output or "")
+    except ValueError:
+        return None
+    if len(values) != 1:
+        return None
+    path = values[0].strip().rstrip("/")
+    if not path.startswith("/") or any(ch in path for ch in "\r\n\0"):
+        return None
+    return path
+
+
+def _skill_value_text(value: Any) -> str:
+    if value is None:
+        return "nil"
+    if value is True:
+        return "t"
+    if isinstance(value, list):
+        return "(" + " ".join(_skill_value_text(item) for item in value) + ")"
+    return str(value)
 
 class VirtuosoClient(VirtuosoInterface):
     """Virtuoso SKILL bridge using the RAMIC daemon over TCP.
@@ -141,6 +231,10 @@ class VirtuosoClient(VirtuosoInterface):
 
         self.requests = RequestOps(self)
         self._il_upload_cache: dict[str, tuple[str, str]] = {}
+        # Documentation discovery fallback (see _fallback_install_root): a
+        # callable returning the Cadence install root of a running Virtuoso.
+        self._install_root_probe: Callable[[], str | None] | None = None
+        self._fallback_install_root_value: Any = _UNSET
         # For connect retry when jump host adds latency
         self._has_jump_host = (
             bool(os.getenv("VB_JUMP_HOST", "").strip())
@@ -176,11 +270,13 @@ class VirtuosoClient(VirtuosoInterface):
                 raise RuntimeError("Tunnel state file is missing or invalid.")
             port = state["port"]
             ssh = SSHClient.from_env(keep_remote_files=True, profile=profile)
-            # The token never lives in state.json (world-readable by
-            # design); it is fetched from the daemon host over SSH.
+            # Resolve discovery before choosing a credential mode. Historical
+            # state contains only metadata and must not force registered auth.
+            unresolved = getattr(ssh, "_discover_instances", False) and not getattr(ssh, "instance_record", None)
+            token = None if unresolved else _acquire_daemon_token(ssh)
             client = cls(host="127.0.0.1", port=port, timeout=timeout, tunnel=ssh,
-                         log_to_ciw=log_to_ciw, daemon_token=_acquire_daemon_token(ssh))
-            client._reject_cross_user_daemon_if_reachable(profile=profile, timeout=min(timeout, 10))
+                         log_to_ciw=log_to_ciw, daemon_token=token)
+            client._reject_cross_user_daemon_if_reachable(profile=profile, timeout=timeout)
             return client
 
         # No tunnel running: construct the role-aware transports, but defer
@@ -246,7 +342,7 @@ class VirtuosoClient(VirtuosoInterface):
         if has_runner:
             client._reject_cross_user_daemon_if_reachable(
                 profile=getattr(tunnel, "_profile", None),
-                timeout=min(timeout, 10),
+                timeout=timeout,
             )
         return client
 
@@ -416,14 +512,84 @@ class VirtuosoClient(VirtuosoInterface):
         """
         from virtuoso_bridge.daemon_guard import OVERRIDE_ENV, check_daemon_user
 
+        remote_cache_path = getattr(self._tunnel, "remote_cache_path", None)
+        cache = remote_cache_path() if callable(remote_cache_path) else None
+        caps = self._signed_handshake(timeout)
+        if cache is not None and caps is not None and _same_verified_daemon(
+            daemon_auth.read_remote_cache(cache).get("verified"), caps,
+        ):
+            # This exact daemon instance, signed with our token, was verified
+            # before: skip the SSH owner lookup.
+            return
+
         check = check_daemon_user(self, profile=profile, timeout=timeout)
+        if (
+            check.ok and not check.skipped and cache is not None and caps is not None
+            and check.daemon_user and check.daemon_user == check.expected_user
+        ):
+            daemon_auth.update_remote_cache(cache, verified={
+                "daemon_instance": caps.get("daemon_instance"),
+                "virtuoso_pid": caps.get("virtuoso_pid"),
+                "daemon_user": check.daemon_user,
+            })
+        if not check.ok and check.busy:
+            raise RuntimeError(
+                f"Virtuoso daemon is busy: {check.error}. Retry once the CIW is "
+                "idle or its dialog is closed; `virtuoso-bridge status` shows the lane."
+            )
         if not check.ok:
+            if not check.expected_user or not check.daemon_user:
+                raise RuntimeError(
+                    f"Virtuoso daemon identity check failed: {check.error}. "
+                    "Identity is unconfirmed, not a confirmed user mismatch. "
+                    "Check plain SSH latency/authentication (including server reverse DNS) "
+                    "and the CIW state; increase the client timeout or eval/load --timeout "
+                    "for a slow healthy connection. Keep identity checks enabled."
+                )
             raise RuntimeError(
                 f"Virtuoso daemon identity check failed: {check.error}. "
                 f"If the daemon is genuinely busy, retry once the CIW is idle; "
                 f"set {OVERRIDE_ENV}=1 only if this cross-user connection is "
                 f"intentional."
             )
+
+    def _signed_handshake(self, timeout: float) -> dict[str, Any] | None:
+        """The daemon's signed capabilities, or None.
+
+        A token from the local cache that the daemon rejects, or that could
+        not be checked because the daemon did not answer, is replaced by one
+        fetched over SSH.
+        """
+        from_cache = getattr(self._tunnel, "daemon_token_from_cache", False)
+        try:
+            caps = self._ensure_daemon_capabilities(time.monotonic() + timeout)
+        except daemon_auth.DaemonAuthError:
+            if not from_cache:
+                return None
+            self.daemon_token = self._tunnel.refresh_daemon_token()
+            try:
+                caps = self._ensure_daemon_capabilities(time.monotonic() + timeout)
+            except (daemon_auth.DaemonAuthError, OSError):
+                return None
+        except OSError:
+            if from_cache:
+                self.daemon_token = self._tunnel.refresh_daemon_token()
+            return None
+        return caps if caps.get("auth") == "on" else None
+
+    def handshake_virtuoso_pid(self, timeout: float = 5) -> int | None:
+        """Virtuoso PID from the daemon's signed capability handshake.
+
+        The handshake is answered by the daemon itself, not through the CIW,
+        so it works while a request runs or a dialog blocks the CIW. Returns
+        None when the handshake is not signed (auth off) or carries no PID.
+        Authentication failures propagate.
+        """
+        caps = self._ensure_daemon_capabilities(time.monotonic() + timeout)
+        pid = caps.get("virtuoso_pid")
+        if caps.get("auth") != "on" or not isinstance(pid, int):
+            return None
+        return pid
 
     @property
     def remote_virtuoso_pid(self) -> int | None:
@@ -434,7 +600,7 @@ class VirtuosoClient(VirtuosoInterface):
     def get_virtuoso_pid(self, timeout: int | None = None) -> int | None:
         """PID of the Virtuoso process executing this client's SKILL.
 
-        Asked via ``getpid()`` through the token-authenticated channel, so
+        Asked via ``ipcGetPid()`` through the token-authenticated channel, so
         once authentication has succeeded the answer belongs to the daemon
         that proved it holds your bridge token — a squatted port cannot
         produce one.  The value is cached for the client's lifetime and is
@@ -442,7 +608,7 @@ class VirtuosoClient(VirtuosoInterface):
         """
         if self._remote_virtuoso_pid is not None:
             return self._remote_virtuoso_pid
-        result = self.execute_skill("getpid()", timeout=timeout if timeout is not None else 10)
+        result = self.execute_skill("ipcGetPid()", timeout=timeout if timeout is not None else 10)
         if result.status != ExecutionStatus.SUCCESS:
             return None
         raw = (result.output or "").strip().strip('"')
@@ -518,6 +684,8 @@ class VirtuosoClient(VirtuosoInterface):
         logger.debug("execute_skill %s:%d timeout=%g skill=%s",
                       self._host, self._port, effective_timeout, skill_code[:120])
 
+        busy_retries = 0
+        busy_delay = _BUSY_RETRY_FIRST_DELAY
         try:
             while True:
                 if time.monotonic() >= deadline:
@@ -530,6 +698,18 @@ class VirtuosoClient(VirtuosoInterface):
                     )
                     elapsed = time.monotonic() - start_time
                     result = self._parse_response(raw_response, elapsed)
+                    if (
+                        result.status == ExecutionStatus.ERROR
+                        and result.errors
+                        and result.errors[0] in _RETRYABLE_BUSY_ERRORS
+                        and time.monotonic() + busy_delay < deadline
+                    ):
+                        busy_retries += 1
+                        time.sleep(busy_delay)
+                        busy_delay = min(busy_delay * 2, _BUSY_RETRY_MAX_DELAY)
+                        continue
+                    if busy_retries:
+                        result.metadata["busy_retries"] = busy_retries
                     logger.debug("execute_skill OK (%.3fs)", elapsed)
                     return result
                 except ConnectionRefusedError:
@@ -572,12 +752,14 @@ class VirtuosoClient(VirtuosoInterface):
             elapsed = time.monotonic() - start_time
             logger.warning("Connection refused to %s:%d (no daemon?)",
                            self._host, self._port)
+            hint = "Ensure the RAMIC Bridge daemon is running in Virtuoso."
+            if self._host in ("127.0.0.1", "localhost", "::1"):
+                hint += (" For a remote Virtuoso, the local SSH tunnel may be down: "
+                         "check with `virtuoso-bridge status`, restore it with "
+                         "`virtuoso-bridge start`.")
             return VirtuosoResult(
                 status=ExecutionStatus.ERROR,
-                errors=[
-                    f"Connection refused to {self._host}:{self._port}. "
-                    "Ensure the RAMIC Bridge daemon is running in Virtuoso."
-                ],
+                errors=[f"Connection refused to {self._host}:{self._port}. {hint}"],
                 execution_time=elapsed,
             )
         except OSError as exc:
@@ -654,10 +836,56 @@ class VirtuosoClient(VirtuosoInterface):
         return self.execute_skill(skill, timeout=effective_timeout)
 
     def open_window(self, lib: str, cell: str, *, view: str = "schematic",
-                    view_type: str | None = None, timeout: int | None = None) -> VirtuosoResult:
+                    view_type: str | None = None, timeout: int | None = None,
+                    show_hierarchy: bool = True) -> VirtuosoResult:
+        """Open (or raise) a window; a new layout window shows all levels.
+
+        ``show_hierarchy=False`` keeps Virtuoso's own stop level for a layout
+        window this call opens. A window already open is never changed.
+        """
         effective_timeout = timeout if timeout is not None else self._timeout
-        skill = op_open_window(lib, cell, view=view, view_type=view_type)
+        skill = op_open_window(lib, cell, view=view, view_type=view_type,
+                               show_hierarchy=show_hierarchy)
         return self.execute_skill(skill, timeout=effective_timeout)
+
+    def close_windows(self, lib: str | None = None, cell: str | None = None,
+                      view: str | None = None, *, unsaved: str = "refuse",
+                      timeout: int | None = None) -> VirtuosoResult:
+        """Close matching cellview windows without raising a Save Changes dialog.
+
+        ``unsaved="refuse"`` (default) closes nothing if a matching cellview
+        has unsaved changes and reports them; ``unsaved="save"`` saves them
+        first. ``unsaved="discard"`` purges the modified matching cellviews,
+        invalidating their database handles and clearing undo checkpoints for
+        earlier edits, including other cellviews.
+        The output is the number of windows closed.
+        """
+        effective_timeout = timeout if timeout is not None else self._timeout
+        skill = op_close_windows(lib, cell, view, unsaved=unsaved)
+        return self.execute_skill(skill, timeout=effective_timeout, retry_connect=False)
+
+    def request_exit(self, *, display_resources: str, unsaved: str = "refuse",
+                     display_path: str | Path | None = None,
+                     timeout: int | None = None) -> VirtuosoResult:
+        """Request exit of this Virtuoso, retaining ordinary exit hooks.
+
+        Display resources must explicitly be saved to ``display_path`` or
+        discarded. Cellviews default to refusing unsaved edits; ``save`` and
+        ``discard`` apply to all open cellviews, including non-window handles.
+        A successful reply has ``metadata.exit_state="requested"``: a hook
+        may still cancel or block exit. Do not retry an uncertain request.
+        """
+        skill = op_request_exit(
+            display_resources=display_resources, unsaved=unsaved,
+            display_path=os.fspath(display_path) if display_path is not None else None,
+        )
+        effective_timeout = timeout if timeout is not None else self._timeout
+        result = self.execute_skill(skill, timeout=effective_timeout, retry_connect=False)
+        result.metadata["exit_state"] = (
+            "requested" if result.status == ExecutionStatus.SUCCESS else
+            "not_started" if result.metadata.get("request_sent") is False else "unknown"
+        )
+        return result
 
     def save_current_cellview(self, timeout: int | None = None) -> VirtuosoResult:
         effective_timeout = timeout if timeout is not None else self._timeout
@@ -784,7 +1012,11 @@ let((result winName ciwNum)
         client_id = resolve_client_id(getattr(self._tunnel, '_profile', None)) if self._tunnel else None
         screenshot_dir = default_virtuoso_bridge_dir(username, "screenshots", client_id)
         if self._tunnel and self._tunnel._ssh_runner:
-            self._tunnel._ssh_runner.run_command(f"mkdir -p {screenshot_dir}")
+            self._tunnel._ssh_runner.run_command(f"mkdir -p {shlex.quote(screenshot_dir)}")
+        elif self.ssh_runner is None:
+            local_dir = Path(screenshot_dir).expanduser().resolve()
+            local_dir.mkdir(parents=True, exist_ok=True)
+            screenshot_dir = local_dir.as_posix()
 
         from datetime import datetime
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -895,19 +1127,64 @@ let((result winName ciwNum)
         return rows[0] if rows else {}
 
     def run_shell_command(self, cmd: str, timeout: int | None = None) -> VirtuosoResult:
+        """Run a csh command in the Virtuoso process's environment.
+
+        ``output`` is the command's stdout and stderr; a non-zero exit status
+        is an ERROR result. The command is written verbatim to a temp script
+        that a csh subshell sources, so quoting reaches csh unchanged, and its
+        output goes through a private temp file because SKILL's ``csh()`` only
+        returns t/nil.
+        """
+        from virtuoso_bridge.virtuoso.skill_output import parse_sexpr
+
         effective_timeout = timeout if timeout is not None else self._timeout
-        escaped = _escape_skill_string(cmd)
-        result = self.execute_skill(f'csh("{escaped}")', timeout=effective_timeout)
+        escaped = _escape_skill_string(cmd).replace("\n", "\\n")  # keep line breaks
+        skill = (
+            "let((vbScript vbOut vbOk vbPort vbLine vbText) "
+            'vbScript = makeTempFileName("/tmp/vb_shell_cmd") '
+            'vbOut = makeTempFileName("/tmp/vb_shell_out") '
+            "vbPort = outfile(vbScript) "
+            f'fprintf(vbPort "%s\\n" "{escaped}") '
+            "close(vbPort) "
+            'vbOk = csh(strcat("umask 077; ( source " vbScript " ) >& " vbOut)) '
+            'vbText = "" '
+            "when(vbPort = infile(vbOut) "
+            "while(gets(vbLine vbPort) vbText = strcat(vbText vbLine)) "
+            "close(vbPort)) "
+            "deleteFile(vbScript) "
+            "deleteFile(vbOut) "
+            "list(if(vbOk t nil) vbText))"
+        )
+        result = self.execute_skill(skill, timeout=effective_timeout)
         if result.status != ExecutionStatus.SUCCESS:
             return result
-        if (result.output or "").strip().lower() == "nil":
+        try:
+            parsed = parse_sexpr((result.output or "").strip())
+        except ValueError:
+            parsed = None
+        if not isinstance(parsed, list) or len(parsed) != 2:
             return VirtuosoResult(
                 status=ExecutionStatus.ERROR,
-                errors=[f"Shell command failed (csh returned nil): {cmd}"],
+                errors=[f"Shell command returned malformed output: {result.output!r}"],
                 metadata={"cmd": cmd},
                 execution_time=result.execution_time,
             )
-        return result
+        succeeded, text = parsed[0] is True, parsed[1] if isinstance(parsed[1], str) else ""
+        if not succeeded:
+            last = text.strip().splitlines()[-1] if text.strip() else ""
+            return VirtuosoResult(
+                status=ExecutionStatus.ERROR,
+                output=text,
+                errors=[f"Shell command failed: {cmd}" + (f" ({last})" if last else "")],
+                metadata={"cmd": cmd},
+                execution_time=result.execution_time,
+            )
+        return VirtuosoResult(
+            status=ExecutionStatus.SUCCESS,
+            output=text,
+            metadata={"cmd": cmd},
+            execution_time=result.execution_time,
+        )
 
     # -- X11 dialog recovery (bypasses SKILL channel) ----------------------
 
@@ -1054,6 +1331,89 @@ let((result winName ciwNum)
             execution_time=time.perf_counter() - started,
         )
 
+    # -- Documentation discovery fallback ----------------------------------
+
+    def _query_install_root(self, timeout: float = _INSTALL_ROOT_QUERY_TIMEOUT) -> str | None:
+        """Cadence install root reported by the connected Virtuoso, or None.
+
+        Sends one read-only ``cdsGetInstPath()`` and never retries it. It is
+        not sent while the daemon's handshake reports a busy or stuck IPC
+        lane, so a documentation lookup does not queue behind a blocked CIW.
+        """
+        try:
+            caps = self._ensure_daemon_capabilities(time.monotonic() + timeout, refresh=True)
+        except (daemon_auth.DaemonAuthError, OSError):
+            return None
+        lane = caps.get("lane")
+        if isinstance(lane, dict) and lane.get("state") not in (None, "idle"):
+            return None
+        result = self.execute_skill("cdsGetInstPath()", timeout=timeout, retry_connect=False)
+        if result.status != ExecutionStatus.SUCCESS:
+            return None
+        return _install_root_from_skill_output(result.output)
+
+    def _fallback_install_root(self) -> str | None:
+        """Install root from a running Virtuoso when SSH discovery found nothing.
+
+        Uses the injected probe (the CLI's documentation client reuses an
+        already running tunnel), else this client's own daemon connection
+        when it already holds a daemon token. Nothing is started or deployed;
+        any failure means no fallback. The answer is kept for this client.
+        """
+        if self._fallback_install_root_value is not _UNSET:
+            return self._fallback_install_root_value
+        probe = self._install_root_probe
+        if probe is None and self._daemon_token:
+            probe = self._query_install_root
+        value: str | None = None
+        if probe is not None:
+            try:
+                value = probe()
+            except Exception as exc:  # noqa: BLE001 - a fallback must not fail the lookup
+                logger.debug("docs: running Virtuoso did not report its install root: %s", exc)
+                value = None
+        if value:
+            logger.info("docs: using install root %s reported by the running Virtuoso", value)
+        self._fallback_install_root_value = value or None
+        return self._fallback_install_root_value
+
+    def _discover_remote_finder_root(self, runner) -> Path | None:
+        """``doc/finder/SKILL`` on the documentation host, or None."""
+        from virtuoso_bridge.virtuoso.skill_finder import SKILLFinder
+
+        profile = getattr(self._tunnel, "_profile", None) if self._tunnel else None
+        finder_root = SKILLFinder().discover(remote_runner=runner, profile=profile)
+        if finder_root is not None:
+            return finder_root
+        install_root = self._fallback_install_root()
+        if install_root is None:
+            return None
+        try:
+            return SKILLFinder().discover_from_install_root(runner, install_root)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("docs: SKILL Finder lookup under %s failed: %s", install_root, exc)
+            return None
+
+    def _discover_remote_doc_roots(self, runner) -> list[str]:
+        """Cadence doc roots on the documentation host (empty when none)."""
+        from virtuoso_bridge.virtuoso.docs_search import (
+            discover_remote_doc_roots,
+            doc_roots_from_install_root,
+        )
+
+        profile = getattr(self._tunnel, "_profile", None) if self._tunnel else None
+        roots = discover_remote_doc_roots(runner, profile=profile)
+        if roots:
+            return roots
+        install_root = self._fallback_install_root()
+        if install_root is None:
+            return []
+        try:
+            return doc_roots_from_install_root(runner, install_root)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("docs: doc root check under %s failed: %s", install_root, exc)
+            return []
+
     # -- SKILL Finder -------------------------------------------------------
 
     def find_skill(
@@ -1065,13 +1425,17 @@ let((result winName ciwNum)
         include_desc: bool = False,
         source_dir: str | Path | None = None,
         cache_dir: str | Path | None = None,
+        missing_ok: bool = True,
     ) -> list[dict]:
         """Search SKILL API documentation by name.
 
         On first call (or when *source_dir* is not provided), discovers
         the SKILL Finder directory on the GUI/documentation host by walking
         up from
-        the ``virtuoso`` binary to ``doc/finder/SKILL``.  The directory is
+        the ``virtuoso`` binary to ``doc/finder/SKILL``.  When that finds
+        nothing and a bridge daemon is already reachable, the install root
+        the running Virtuoso reports (``cdsGetInstPath()``) is used instead.
+        The directory is
         cached locally in *cache_dir* (default:
         the user cache directory under ``skill_finder/<host>`` so subsequent
         calls are fast without additional network traffic.
@@ -1100,6 +1464,10 @@ let((result winName ciwNum)
         cache_dir : str | Path | None
             Local cache directory for downloaded .fnd files.  If None,
             defaults to the user cache directory under ``skill_finder/<host>``.
+        missing_ok : bool
+            When False, raise :class:`SKILLFinderNotFoundError` if no SKILL
+            Finder data can be located, instead of returning ``[]`` as for
+            a query without matches.
 
         Returns
         -------
@@ -1111,7 +1479,7 @@ let((result winName ciwNum)
         from virtuoso_bridge.runtime_paths import cache_dir as runtime_cache_dir
         from virtuoso_bridge.virtuoso.skill_finder import (
             SKILLFinder,
-            SearchMode,
+            SKILLFinderNotFoundError,
         )
 
         # Resolve cache directory
@@ -1129,14 +1497,17 @@ let((result winName ciwNum)
         elif runner is not None:
             from virtuoso_bridge.virtuoso.docs_search import to_remote_posix
 
-            profile = getattr(self._tunnel, "_profile", None) if self._tunnel else None
-            finder = SKILLFinder()
-            finder_root = finder.discover(remote_runner=runner, profile=profile)
+            finder_root = self._discover_remote_finder_root(runner)
             if finder_root is None:
                 logger.warning(
                     "find_skill: could not locate doc/finder/SKILL on %s",
                     self._skill_finder_cache_host(),
                 )
+                if not missing_ok:
+                    raise SKILLFinderNotFoundError(
+                        "no SKILL Finder data (doc/finder/SKILL) found on "
+                        f"{self._skill_finder_cache_host()}"
+                    )
                 return []
             # Remote paths must stay POSIX even on a Windows client, where
             # Path("/opt/cadence/...") would stringify with backslashes.
@@ -1185,6 +1556,10 @@ let((result winName ciwNum)
             finder_root = finder.discover(remote_runner=None)
             if finder_root is None:
                 logger.warning("find_skill: could not locate SKILL Finder locally")
+                if not missing_ok:
+                    raise SKILLFinderNotFoundError(
+                        "no SKILL Finder data (doc/finder/SKILL) found on this machine"
+                    )
                 return []
             doc_root = finder_root.parent.parent
 
@@ -1207,6 +1582,7 @@ let((result winName ciwNum)
         *,
         source_dir: str | Path | None = None,
         cache_dir: str | Path | None = None,
+        missing_ok: bool = True,
     ) -> dict | None:
         """Get More Info documentation for a specific SKILL function.
 
@@ -1226,6 +1602,10 @@ let((result winName ciwNum)
         cache_dir : str | Path | None
             Local cache directory.  If None, defaults to
             the user cache directory under ``skill_finder/<host>``.
+        missing_ok : bool
+            When False, raise :class:`SKILLFinderNotFoundError` if the doc
+            root cannot be located, instead of returning None as for a
+            function without a More Info entry.
 
         Returns
         -------
@@ -1236,7 +1616,10 @@ let((result winName ciwNum)
         """
         from pathlib import Path as _Path
         from virtuoso_bridge.runtime_paths import cache_dir as runtime_cache_dir
-        from virtuoso_bridge.virtuoso.skill_finder import SKILLFinder
+        from virtuoso_bridge.virtuoso.skill_finder import (
+            SKILLFinder,
+            SKILLFinderNotFoundError,
+        )
         from virtuoso_bridge.virtuoso.skill_finder.more_info import (
             html_to_plain_text,
             parse_tgf_index,
@@ -1259,14 +1642,17 @@ let((result winName ciwNum)
             if runner is not None:
                 remote_doc_root = to_remote_posix(doc_root)
         elif runner is not None:
-            profile = getattr(self._tunnel, "_profile", None) if self._tunnel else None
-            finder = SKILLFinder()
-            finder_root = finder.discover(remote_runner=runner, profile=profile)
+            finder_root = self._discover_remote_finder_root(runner)
             if finder_root is None:
                 logger.warning(
                     "get_skill_more_info: could not locate doc/finder/SKILL on %s",
                     self._skill_finder_cache_host(),
                 )
+                if not missing_ok:
+                    raise SKILLFinderNotFoundError(
+                        "no SKILL Finder data (doc/finder/SKILL) found on "
+                        f"{self._skill_finder_cache_host()}"
+                    )
                 return None
             doc_root = finder_root.parent.parent
             # Remote paths must stay POSIX even on a Windows client.
@@ -1276,6 +1662,10 @@ let((result winName ciwNum)
             finder_root = finder.discover(remote_runner=None)
             if finder_root is None:
                 logger.warning("get_skill_more_info: could not locate SKILL Finder locally")
+                if not missing_ok:
+                    raise SKILLFinderNotFoundError(
+                        "no SKILL Finder data (doc/finder/SKILL) found on this machine"
+                    )
                 return None
             doc_root = finder_root.parent.parent
 
@@ -1446,6 +1836,7 @@ let((result winName ciwNum)
         doc_roots: list[str | Path] | None = None,
         cache_dir: str | Path | None = None,
         rebuild_index: bool = False,
+        progress: Callable[[str], None] | None = None,
     ) -> dict[str, object]:
         """Search installed Cadence documentation.
 
@@ -1458,7 +1849,6 @@ let((result winName ciwNum)
         from virtuoso_bridge.runtime_paths import cache_dir as runtime_cache_dir
         from virtuoso_bridge.virtuoso.docs_search import (
             cache_remote_doc_matches,
-            discover_remote_doc_roots,
             find_remote_doc_matches,
             remap_results_to_remote,
             resolve_doc_roots,
@@ -1481,12 +1871,12 @@ let((result winName ciwNum)
                     cache_root=cache_root / self._skill_finder_cache_host(),
                     limit=safe_limit,
                     rebuild=rebuild_index,
+                    progress=progress,
                 ),
             }
 
         if runner is not None:
-            profile = getattr(self._tunnel, "_profile", None) if self._tunnel else None
-            remote_roots = discover_remote_doc_roots(runner, profile=profile)
+            remote_roots = self._discover_remote_doc_roots(runner)
             if not remote_roots:
                 return {"doc_roots": [], "results": []}
 
@@ -1505,6 +1895,7 @@ let((result winName ciwNum)
                         cache_root=cache_root / self._skill_finder_cache_host(),
                         limit=safe_limit,
                         rebuild=rebuild_index,
+                    progress=progress,
                     ),
                 }
             except Exception as exc:
@@ -1535,6 +1926,7 @@ let((result winName ciwNum)
                 cache_root=cache_root / self._skill_finder_cache_host(),
                 limit=safe_limit,
                 rebuild=rebuild_index,
+                    progress=progress,
             ),
         }
 
@@ -1553,7 +1945,6 @@ let((result winName ciwNum)
         ``{"ok": bool, "doc_roots": [...]}``.
         """
         from virtuoso_bridge.virtuoso.docs_search import (
-            discover_remote_doc_roots,
             doc_root_info_local,
             doc_root_info_remote,
             resolve_doc_roots,
@@ -1569,8 +1960,7 @@ let((result winName ciwNum)
 
         runner = self.docs_runner
         if runner is not None:
-            profile = getattr(self._tunnel, "_profile", None) if self._tunnel else None
-            remote_roots = discover_remote_doc_roots(runner, profile=profile)
+            remote_roots = self._discover_remote_doc_roots(runner)
             if not remote_roots:
                 return {"ok": True, "doc_roots": []}
             return {
@@ -1653,7 +2043,9 @@ let((result winName ciwNum)
     def _prepare_il_path(self, path: str | Path) -> tuple[str, bool]:
         """Return (remote_path, uploaded) where uploaded=False means cache hit."""
         p = Path(path)
-        if self._tunnel is not None and p.is_file():
+        if (self._tunnel is not None
+                and getattr(self._tunnel, "ssh_runner", None) is not None
+                and p.is_file()):
             from virtuoso_bridge.transport.remote_paths import (
                 default_virtuoso_bridge_dir,
                 resolve_client_id,
@@ -1714,6 +2106,14 @@ let((result winName ciwNum)
             logger.debug("TCP received %d bytes", len(raw))
             return raw
 
+    def use_current_selection(self) -> None:
+        """Keep the caller's freshly selected record; still authenticate hello.
+
+        Read-only diagnostics and explicit lifecycle operations must not
+        reconcile a vanished selection by silently connecting to another CIW.
+        """
+        self._selection_reconciled = True
+
     def _build_hello_payload(self) -> dict[str, Any]:
         nonce = secrets.token_hex(16)
         self._pending_nonce = nonce
@@ -1738,8 +2138,8 @@ let((result winName ciwNum)
         except json.JSONDecodeError:
             raise daemon_auth.DaemonAuthError(
                 "daemon sent an unparseable capability payload — it predates "
-                "bridge token auth; run `virtuoso-bridge restart` (or re-load "
-                "virtuoso_setup.il in the CIW) to upgrade it"
+                "bridge token auth; prepare updated code, then explicitly stop/wait/load "
+                "the setup in the intended idle CIW. A plain restart does not deploy files or reload the setup"
             )
         if not isinstance(caps, dict):
             raise daemon_auth.DaemonAuthError(
@@ -1779,7 +2179,38 @@ let((result winName ciwNum)
         ``ConnectionRefusedError``/``OSError`` propagate so callers can apply
         their normal connect-retry policy.
         """
-        if self._daemon_caps is not None and not refresh:
+        expected = getattr(self._tunnel, "instance_record", None)
+        if getattr(self._tunnel, "_discover_instances", False):
+            if expected is None and not getattr(self, "_selection_reconciled", False):
+                # An existing legacy tunnel is not a reason to skip discovery.
+                # Resolve before transmitting anything, then use the credential
+                # appropriate to the selected registered or legacy endpoint.
+                self._tunnel.discover_instance(provision=False)
+                self._tunnel.ensure_tunnel()
+                self._port = self._tunnel.port
+                self.daemon_token = self._tunnel.ensure_daemon_token()
+                expected = self._tunnel.instance_record
+                self._selection_reconciled = True
+            from virtuoso_bridge.instance_discovery import validate_record
+            try:
+                if not getattr(self._tunnel, "_legacy_fallback", False):
+                    validate_record(expected)
+            except ValueError as exc:
+                raise daemon_auth.DaemonAuthError(
+                    "No valid Virtuoso instance selected. Run virtuoso-bridge start first: " + str(exc)
+                ) from exc
+            if expected and not getattr(self, "_selection_reconciled", False) and hasattr(self._tunnel, "reconcile_instance"):
+                changed = self._tunnel.reconcile_instance(max(1, int(deadline - time.monotonic())))
+                if changed:
+                    self._port = self._tunnel.port
+                    self.daemon_token = self._tunnel.daemon_token
+                    self._daemon_caps = None
+                expected = self._tunnel.instance_record
+                self._selection_reconciled = True
+        elif expected is not None and not isinstance(expected, dict):
+            raise daemon_auth.DaemonAuthError("Invalid expected instance record")
+        if (self._daemon_caps is not None and not refresh
+                and (not expected or self._daemon_caps.get("instance_record") == expected)):
             return self._daemon_caps
         payload = self._build_hello_payload()
         nonce = payload["nonce"]
@@ -1793,9 +2224,9 @@ let((result winName ciwNum)
                 raise daemon_auth.DaemonAuthError(message)
             raise daemon_auth.DaemonAuthError(
                 "daemon did not answer the bridge capability handshake — it "
-                "predates bridge token auth or runs with auth disabled; run "
-                "`virtuoso-bridge restart` (or re-load virtuoso_setup.il in "
-                "the CIW) to upgrade it"
+                "predates bridge token auth or runs with auth disabled; prepare an updated "
+                "setup, then explicitly stop/wait/load it in the intended idle CIW. "
+                "A plain restart does not deploy files or reload the setup"
             )
         if raw[:1] != b"\x02":
             raise daemon_auth.DaemonAuthError(
@@ -1818,8 +2249,8 @@ let((result winName ciwNum)
             if caps.get("auth") != "off":
                 raise daemon_auth.DaemonAuthError(
                     "daemon did not authenticate its handshake response — "
-                    "run `virtuoso-bridge restart` (or re-load "
-                    "virtuoso_setup.il in the CIW) to upgrade it"
+                    "prepare an updated setup, then explicitly stop/wait/load it in the "
+                    "intended idle CIW. A plain restart does not deploy files or reload the setup"
                 )
             if not daemon_auth.allow_unauthenticated():
                 raise daemon_auth.DaemonAuthError(
@@ -1852,6 +2283,18 @@ let((result winName ciwNum)
                     "insecure legacy mode"
                 )
 
+        expected = getattr(self._tunnel, "instance_record", None)
+        if getattr(self._tunnel, "_legacy_fallback", False) and caps.get("instance_record"):
+            raise daemon_auth.DaemonAuthError(
+                "Registered daemon is absent from discovery; inspect the registry root before connecting"
+            )
+        if isinstance(expected, dict) and (
+            caps.get("auth") != "on" or caps.get("instance_record") != expected
+        ):
+            raise daemon_auth.DaemonAuthError(
+                "Authenticated daemon does not match the discovered instance; run start again"
+            )
+
         # Free identity data from the (signed, when auth is on) handshake.
         pid = caps.get("virtuoso_pid")
         if isinstance(pid, int) and pid > 0:
@@ -1867,7 +2310,20 @@ let((result winName ciwNum)
     ) -> str:
         # Handshake first: authentication failures must never cost an
         # execution on a foreign or outdated daemon.
-        self._ensure_daemon_capabilities(deadline)
+        caps = self._ensure_daemon_capabilities(deadline)
+        binding = caps.get("instance_bound_requests")
+        if binding is not None and (type(binding) is not int or binding not in (0, 1)):
+            raise daemon_auth.DaemonAuthError("Invalid instance-bound execution capabilities")
+        bound = type(binding) is int and binding == 1
+        if caps.get("instance_record") and not bound:
+            raise daemon_auth.DaemonAuthError(
+                "Registered daemon lacks instance-bound execution; load an updated "
+                "bridge bundle in the intended idle CIW before executing"
+            )
+        if bound and (caps.get("auth") != "on" or not self._daemon_token
+                      or not isinstance(caps.get("daemon_instance"), str)
+                      or not re.fullmatch(r"[0-9a-f]{32}", caps["daemon_instance"])):
+            raise daemon_auth.DaemonAuthError("Invalid instance-bound execution capabilities")
         request_timeout = min(timeout, self._remaining_timeout(deadline))
         payload: dict[str, Any] = {
             "proto": daemon_auth.PROTOCOL_VERSION,
@@ -1878,11 +2334,17 @@ let((result winName ciwNum)
         if self._daemon_token:
             nonce = secrets.token_hex(16)
             payload["nonce"] = nonce
-            payload["mac"] = daemon_auth.request_mac(
+            binding_fields = {}
+            if bound:
+                payload.update(op="execute", daemon_instance=caps["daemon_instance"])
+                binding_fields["daemon_instance"] = caps["daemon_instance"]
+            sign = daemon_auth.bound_request_mac if bound else daemon_auth.request_mac
+            payload["mac"] = sign(
                 self._daemon_token,
                 nonce=nonce,
                 skill=skill_code,
                 timeout=request_timeout,
+                **binding_fields,
             )
         self._pending_nonce = nonce
         raw = self._exchange_payload(payload, deadline)
@@ -1920,12 +2382,21 @@ let((result winName ciwNum)
     def _parse_response(raw: str, elapsed: float) -> VirtuosoResult:
         if not raw:
             return VirtuosoResult(status=ExecutionStatus.ERROR, errors=["Empty response from daemon"], execution_time=elapsed)
-        if "TimeoutError" in raw:
+        # The daemon reports a timeout only as NAK + "TimeoutError"; the same
+        # word inside a successful result or a SKILL error is just text.
+        if raw.startswith(_NAK + "TimeoutError"):
             return VirtuosoResult(status=ExecutionStatus.ERROR, errors=["SKILL execution timeout in Virtuoso"], execution_time=elapsed)
         if raw.startswith(_STX):
             return VirtuosoResult(status=ExecutionStatus.SUCCESS, output=raw[1:], execution_time=elapsed)
         if raw.startswith(_NAK):
-            return VirtuosoResult(status=ExecutionStatus.ERROR, errors=[raw[1:]], execution_time=elapsed)
+            payload = raw[1:]
+            message = _skill_error_text(payload)
+            return VirtuosoResult(
+                status=ExecutionStatus.ERROR,
+                errors=[message],
+                execution_time=elapsed,
+                metadata={"skill_error": payload} if message != payload else {},
+            )
         return VirtuosoResult(status=ExecutionStatus.SUCCESS, output=raw, execution_time=elapsed,
                               warnings=["Response did not contain a standard status marker"])
 

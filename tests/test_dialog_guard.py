@@ -244,7 +244,7 @@ def test_maestro_nil_does_not_close_forms_probe_or_retry(monkeypatch):
         ssh_runner = None
         def execute_skill(self, expression, **kwargs):
             calls.append(expression)
-            return SimpleNamespace(output="nil" if expression.startswith("maeRunSimulation") else "t", errors=[])
+            return SimpleNamespace(output="nil" if "maeRunSimulation(" in expression else "t", errors=[])
         def dismiss_dialog(self):
             pytest.fail("must not dismiss user dialog")
     monkeypatch.setattr(writer, "_remove_marker", lambda *a: None)
@@ -252,7 +252,7 @@ def test_maestro_nil_does_not_close_forms_probe_or_retry(monkeypatch):
     with pytest.raises(RuntimeError, match="not retried"):
         writer.run_and_wait(Client(), session="s1")
     assert len(calls) == 2
-    assert sum(x.startswith("maeRunSimulation") for x in calls) == 1
+    assert sum("maeRunSimulation(" in x for x in calls) == 1
     assert all("hiFormDone" not in x and "hiGetCurrentForm" not in x for x in calls)
 
 
@@ -262,7 +262,7 @@ def test_guarded_maestro_nil_reports_new_dialog_and_completion_evidence(monkeypa
     calls = []
     def execute(expression, *a, **kw):
         calls.append(expression)
-        if expression.startswith("maeRunSimulation"):
+        if "maeRunSimulation(" in expression:
             monkeypatch.setattr(x11, "inspect_dialogs", lambda *a, **k: _payload("blocked"))
             return VirtuosoResult(status=ExecutionStatus.SUCCESS, output="nil")
         return VirtuosoResult(status=ExecutionStatus.SUCCESS, output="t")
@@ -314,7 +314,7 @@ def test_completion_wait_checks_are_low_frequency_and_keep_history(monkeypatch):
 
 @pytest.mark.parametrize("status,expected", [("clear", 0), ("blocked", 2), ("indeterminate", 1)])
 def test_cli_inspects_without_skill_client(monkeypatch, capsys, status, expected):
-    monkeypatch.setattr(cli, "load_vb_env", lambda: None)
+    monkeypatch.setattr(cli, "load_vb_env", lambda **_kwargs: None)
     monkeypatch.setattr(cli, "_make_ssh_runner", lambda: (None, "local"))
     monkeypatch.setattr(cli, "_get_cli_profile", lambda: "sos")
     monkeypatch.setattr(x11, "inspect_dialogs", lambda *a, **k: _payload(status))
@@ -334,7 +334,7 @@ def test_cli_default_dismissal_does_not_connect(monkeypatch, capsys):
     ("_make_ssh_runner", SystemExit("GUI host not configured")),
 ])
 def test_cli_inspection_setup_failure_is_json(monkeypatch, capsys, stage, error):
-    monkeypatch.setattr(cli, "load_vb_env", lambda: None)
+    monkeypatch.setattr(cli, "load_vb_env", lambda **_kwargs: None)
     def fail():
         raise error
     monkeypatch.setattr(cli, stage, fail)
@@ -350,7 +350,8 @@ def test_cli_explicit_dismissal_preserves_display(monkeypatch, capsys):
     seen = []
     def dismiss(*args, **kwargs):
         seen.append(kwargs)
-        return [{"dismissed": "0x10", "action": "escape"}]
+        return [{"dismissed": "0x10", "action": "escape", "status": "closed",
+                 "closure_confirmed": True, "still_mapped": False}]
     monkeypatch.setattr(x11, "dismiss_window", dismiss)
     assert cli.cli_dismiss_window(window_id="0x10", action="escape", display=":7") == 0
     assert seen[0]["display"] == ":7"
@@ -405,3 +406,82 @@ def test_x11_command_failure_never_becomes_clear(monkeypatch, stdout, returncode
 def test_low_level_bulk_default_does_not_run(monkeypatch):
     monkeypatch.setattr(x11, "_run", lambda *a, **k: pytest.fail("no injection"))
     assert "error" in x11.dismiss_dialogs(None, "user")[0]
+
+
+def test_preflight_runs_the_inspection_and_the_identity_handshake_side_by_side(monkeypatch):
+    # Sequentially they cost the sum of an SSH and a tunnel round trip.
+    import threading
+
+    client = _client(monkeypatch)
+    client.dialogs.enable_guard()
+    inspecting, handshaking = threading.Event(), threading.Event()
+
+    def inspect(*args, **kwargs):
+        inspecting.set()
+        assert handshaking.wait(2), "handshake did not run during the inspection"
+        return _payload()
+
+    def handshake(deadline, **kwargs):
+        handshaking.set()
+        assert inspecting.wait(2), "inspection did not run during the handshake"
+        return client._daemon_caps
+
+    monkeypatch.setattr(x11, "inspect_dialogs", inspect)
+    monkeypatch.setattr(client, "_ensure_daemon_capabilities", handshake)
+    assert client.dialogs.preflight(timeout=5) is None
+
+
+@pytest.mark.parametrize("inspection, caps, expected", [
+    ("blocked", {"auth": "on", "virtuoso_pid": 42}, "blocked"),
+    ("clear", {"auth": "on", "virtuoso_pid": 7}, "indeterminate"),
+    ("clear", {"auth": "off", "virtuoso_pid": 42}, "indeterminate"),
+])
+def test_parallel_preflight_still_needs_both_checks_to_pass(monkeypatch, inspection, caps, expected):
+    client = _client(monkeypatch)
+    client.dialogs.enable_guard()
+    monkeypatch.setattr(x11, "inspect_dialogs", lambda *a, **k: _payload(inspection))
+    monkeypatch.setattr(client, "_ensure_daemon_capabilities", lambda deadline, **k: caps)
+    monkeypatch.setattr(client, "_execute_skill_unguarded", lambda *a, **k: pytest.fail("SKILL was sent"))
+
+    result = client.execute_skill("1+2", timeout=5)
+
+    assert result.metadata["request_sent"] is False
+    assert result.metadata["dialog_guard"]["status"] == expected
+
+
+def test_connected_pid_comes_from_the_signed_handshake(monkeypatch):
+    client = _client(monkeypatch)
+    monkeypatch.setattr(client, "execute_skill", lambda *a, **k: pytest.fail("must not send SKILL"))
+    assert client.dialogs.connected_pid(timeout=5) == 42
+    assert not client.dialogs.enabled, "reading the PID does not enable a guard"
+    client._daemon_caps = {"auth": "off", "virtuoso_pid": 42}
+    with pytest.raises(ValueError, match="authenticated"):
+        client.dialogs.connected_pid(timeout=5)
+    client._daemon_caps = {"auth": "on", "virtuoso_pid": None}
+    with pytest.raises(ValueError, match="no verified Virtuoso PID"):
+        client.dialogs.connected_pid(timeout=5)
+
+
+def test_cli_inspects_the_handshake_pid_when_none_is_given(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "load_vb_env", lambda **_kwargs: None)
+    monkeypatch.setattr(cli, "_make_ssh_runner", lambda: (None, "local"))
+    monkeypatch.setattr(cli, "_connected_virtuoso_pid", lambda timeout: 42)
+    seen = []
+    monkeypatch.setattr(x11, "inspect_dialogs", lambda *a, **k: seen.append(k["pid"]) or _payload("blocked"))
+    assert cli.cli_inspect_dialogs(json_output=True) == 2
+    assert seen == [42]
+    assert json.loads(capsys.readouterr().out)["status"] == "blocked"
+
+
+def test_cli_without_pid_or_tunnel_is_indeterminate_and_starts_nothing(monkeypatch, capsys):
+    from virtuoso_bridge.transport.tunnel import SSHClient
+
+    monkeypatch.setattr(cli, "load_vb_env", lambda **_kwargs: None)
+    monkeypatch.setattr(cli, "_get_cli_profile", lambda: None)
+    monkeypatch.setattr(SSHClient, "is_running", staticmethod(lambda profile=None: False))
+    monkeypatch.setattr(VirtuosoClient, "from_env", classmethod(lambda cls, **k: pytest.fail("must not connect")))
+    monkeypatch.setattr(x11, "inspect_dialogs", lambda *a, **k: pytest.fail("no PID to inspect"))
+    assert cli.cli_inspect_dialogs(json_output=True) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "indeterminate" and report["target"] is None
+    assert "pass --pid" in report["diagnostics"][0]

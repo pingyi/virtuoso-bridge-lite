@@ -74,8 +74,9 @@ def test_local_spectre_sources_configured_cadence_environment(monkeypatch, tmp_p
         cadence_cshrc="/eda/cadence.cshrc",
     )
 
-    assert calls[0][0][:2] == ["csh", "-fc"]
-    assert "source /eda/cadence.cshrc" in calls[0][0][2]
+    assert calls[0][0][:2] == ["sh", "-c"]
+    assert "csh -f -c" in calls[0][0][2]
+    assert "/eda/cadence.cshrc" in calls[0][0][2]
 
 
 def _successful_run(output_dir: Path) -> runner._SpectreRunResult:
@@ -259,3 +260,113 @@ def test_legacy_submit_pool_does_not_leak_into_batches(monkeypatch, tmp_path) ->
     simulator.shutdown()
     with pytest.deprecated_call():
         simulator.set_max_workers(1)
+
+
+def test_failed_remote_run_logs_spectre_output_instead_of_printing(
+    monkeypatch, tmp_path, capsys, caplog
+) -> None:
+    from virtuoso_bridge.transport.ssh import CommandResult, RemoteTaskResult
+
+    spectre_error = 'ERROR (SFE-868): "fixture.scs" 2: Cannot open the input file "missing.scs".'
+    monkeypatch.setattr(
+        runner,
+        "run_remote_task",
+        lambda *_args, **_kwargs: RemoteTaskResult(
+            success=True, returncode=1, stdout=spectre_error, stderr="",
+            remote_dir=None, error=None, timings={},
+        ),
+    )
+
+    class _Runner:
+        host = "eda-host"
+
+        def download(self, _remote, local, recursive=False, **_kwargs):
+            Path(local).mkdir(parents=True, exist_ok=True)
+            return CommandResult(returncode=0, stdout="", stderr="")
+
+    netlist = tmp_path / "fixture.scs"
+    netlist.write_text("simulator lang=spectre\n", encoding="utf-8")
+    caplog.set_level("INFO", logger="virtuoso_bridge.spectre.runner")
+
+    run_result = runner._run_spectre_remote(
+        netlist=netlist, params={}, runner=_Runner(), remote_work_dir="/remote/work",
+        base_output_dir=tmp_path / "out", keep_remote_files=True,
+        cadence_env=runner.CadenceEnvironment(""),
+    )
+    result = runner._build_simulation_result(run_result, "psfascii")
+
+    assert capsys.readouterr().out == ""
+    assert spectre_error in caplog.text
+    assert "spectre" in caplog.text and "+log" in caplog.text
+    assert any("SFE-868" in error or "file not found" in error for error in result.errors)
+
+
+@pytest.mark.parametrize("keep", [True, False])
+def test_kept_remote_run_reports_its_remote_paths(monkeypatch, tmp_path, keep) -> None:
+    from virtuoso_bridge.transport.ssh import CommandResult, RemoteTaskResult
+
+    monkeypatch.setattr(
+        runner,
+        "run_remote_task",
+        lambda *_args, **kwargs: RemoteTaskResult(
+            success=True, returncode=0, stdout="", stderr="",
+            remote_dir=f"/remote/work/{kwargs['run_id']}", error=None, timings={},
+        ),
+    )
+    removed = []
+
+    class _Runner:
+        host = "eda-host"
+
+        def download(self, _remote, local, recursive=False, **_kwargs):
+            Path(local).mkdir(parents=True, exist_ok=True)
+            return CommandResult(returncode=0, stdout="", stderr="")
+
+        def run_command(self, command, **_kwargs):
+            removed.append(command)
+            return CommandResult(returncode=0, stdout="", stderr="")
+
+    netlist = tmp_path / "fixture.scs"
+    netlist.write_text("simulator lang=spectre\n", encoding="utf-8")
+    result = runner._run_spectre_remote(
+        netlist=netlist, params={}, runner=_Runner(), remote_work_dir="/remote/work",
+        base_output_dir=tmp_path / "out", keep_remote_files=keep,
+        cadence_env=runner.CadenceEnvironment(""),
+    )
+
+    assert result.success
+    if keep:
+        remote_dir = result.metadata["remote_dir"]
+        assert remote_dir.startswith("/remote/work/")
+        assert result.metadata["remote_raw_dir"] == f"{remote_dir}/fixture.raw"
+        assert removed == []
+    else:
+        # A deleted run directory is not offered as a usable path.
+        assert "remote_dir" not in result.metadata
+        assert "remote_raw_dir" not in result.metadata
+        assert removed and removed[0].startswith("rm -rf /remote/work/")
+
+
+def test_simulation_result_exposes_kept_remote_paths(monkeypatch, tmp_path) -> None:
+    netlist = tmp_path / "tb_amp.scs"
+    netlist.write_text("simulator lang=spectre\n", encoding="utf-8")
+    seen = {}
+
+    def fake_run_spectre_remote(**kwargs):
+        seen["keep"] = kwargs["keep_remote_files"]
+        run = _successful_run(kwargs["base_output_dir"] / "tb_amp.raw")
+        run.metadata.update(remote_dir="/tmp/spectre-runs/abcd1234",
+                            remote_raw_dir="/tmp/spectre-runs/abcd1234/tb_amp.raw")
+        return run
+
+    monkeypatch.setattr(runner, "_run_spectre_remote", fake_run_spectre_remote)
+    simulator = runner.SpectreSimulator(
+        remote_host="compute-host", remote_work_dir="/tmp/spectre-runs",
+        work_dir=tmp_path / "downloads", ssh_runner=object(), keep_remote_files=True,
+    )
+
+    result = simulator.run_simulation(netlist, {})
+
+    assert seen["keep"] is True
+    assert result.metadata["remote_raw_dir"] == "/tmp/spectre-runs/abcd1234/tb_amp.raw"
+    assert result.metadata["remote_dir"] == "/tmp/spectre-runs/abcd1234"

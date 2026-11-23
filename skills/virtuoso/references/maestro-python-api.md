@@ -434,6 +434,64 @@ client.maestro.set_parameter("cload", "1p 2p", type_name="corner", type_value='(
 
 ## Write — Environment & Simulator Options
 
+### Spectre Engine and X Preset
+
+APS and Spectre X are execution modes of a Spectre-backed test, not separate
+`maeCreateTest(... ?simulator ...)` names. Use an existing idle, editable setup:
+
+```python
+current = client.maestro.get_engine("TRAN", session=session)
+result = client.maestro.set_engine(
+    "TRAN", engine="spectre_x", preset="AX", session=session,
+)
+print(result.before.engine, result.after.engine, result.after.preset)
+
+client.maestro.set_engine("TRAN", engine="aps", session=session)
+# Persistence is separate and explicit; neither API saves or starts a run.
+client.maestro.save_setup(lib, cell, session=session)
+```
+
+| API | Contract |
+| --- | --- |
+| `get_engine(test, *, session="", timeout=30)` | Return `MaestroEngineConfig` with active `engine`, active `preset`, and `stored_spectre_x_preset` |
+| `set_engine(test, *, engine, preset=None, session="", timeout=30)` | Return `MaestroEngineChangeResult` containing `before`, `after`, `changed` and `saved=False` |
+
+Engines are `spectre`, `aps`, `spectre_x` (case-insensitive). X **requires** an
+explicit `CX`, `AX`, `MX`, `LX` or `VX` preset; other engines reject a preset.
+There is no default precision, accuracy-equivalence claim or license guarantee.
+The stored X preset may remain present in APS/Spectre mode, but `preset` then
+returns `None` because that setting is inactive. Switching away from X does not
+reset the stored preset. Existing matching values are not written again.
+
+Both calls resolve exactly one `maeGetTestSession` handle. Passing `session`
+is recommended when multiple sessions exist; empty means Cadence's current
+session, not a newly opened one. Unsupported APIs, non-Spectre analog backends,
+unknown modes and missing tests fail rather than selecting a default. Setting
+X also requires readable, recognized X options; older/indeterminate installations
+are refused. FX and arbitrary simulator switching remain raw-SKILL operations.
+
+The setter checks capabilities, captures the current state, sets the requested
+X preset before switching the mode, then checks setter return values and reads
+both options back within one request. It touches only `uniMode` and (for X)
+`spectreXPreset`. It does not manage thread counts, other solver options,
+session lifecycle, netlists, GUI windows, checkpoints, saving or simulation.
+Arrange an appropriate idle setup and external checkpoint before changing a
+production design. This is not a lock against concurrent users or an atomic
+transaction: partial changes can remain if a later setter fails.
+
+`MaestroEngineError` retains `.result`, `.phase`, `.before` and `.after` when
+available. `MaestroEngineOutcomeUnknown` indicates that a mutation may have
+executed but its outcome is not confirmed, including transport loss or failed
+readback. Keep any request handle in `.result.metadata`, reconcile the original
+request and use a read-only query when safe. No retry, fallback or rollback is
+performed. Neither in-memory readback nor saved setup proves the execution
+engine/threads of a future run; inspect its generated command and simulator log
+when execution-level validation is required.
+
+The same functions/models are available from `virtuoso_bridge.virtuoso.maestro`.
+
+### General Options
+
 | Python | SKILL | Description |
 |--------|-------|-------------|
 | `client.maestro.set_env_option(test, options, *, session="")` | `maeSetEnvOption` | Set model files, view lists, etc. |
@@ -499,6 +557,90 @@ history, status = client.maestro.run_and_wait(session=session, timeout=600)
 # history = client.maestro.run_simulation(session=session)
 # ... SKILL channel is free, do other work ...
 ```
+
+### Durable asynchronous jobs
+
+Use `MaestroJobManager` when a run must outlive the submitting Python process.
+It registers a Cadence completion callback, sends `maeRunSimulation` exactly
+once, and stores a local manifest keyed by `run_id`. Later `status()` and
+`log()` calls read small files from the Virtuoso GUI host; they do not send
+SKILL or require the original `VirtuosoClient` object.
+
+```python
+from pathlib import Path
+from virtuoso_bridge import VirtuosoClient
+from virtuoso_bridge.virtuoso.maestro import MaestroJobManager
+
+root = Path("results/maestro-jobs")
+client = VirtuosoClient.from_env(profile="lab")
+jobs = MaestroJobManager.from_client(client, local_root=root, profile="lab")
+job = jobs.submit(session=session, run_id="long-tran-001")
+client.close()
+
+# A later Python process can reattach without contacting the CIW.
+with MaestroJobManager.from_env(local_root=root, profile="lab") as jobs:
+    job = jobs.load("long-tran-001")
+    status = jobs.status(job)
+    print(status.state, status.history)
+```
+
+For a genuinely local Virtuoso GUI, explicitly authorize the local filesystem
+transport. A loopback TCP endpoint alone is not proof that the GUI is local:
+
+```python
+jobs = MaestroJobManager.from_client(
+    client,
+    local_gui=True,
+    local_root=root,
+)
+```
+
+Later use `MaestroJobManager.local()` to observe that saved handle. Do not pass
+`local_gui=True` for an SSH-forwarded or otherwise remote TCP endpoint.
+
+Submission requires an exact Maestro GUI session in Editing mode and enables
+the shared-CIW dialog guard with recoverable in-flight requests. If start
+acknowledgement is lost, `MaestroJobSubmissionError.state` is `unknown` and the
+exception retains the generated `run_id`; the start request is never repeated.
+The manifest also retains the authenticated request handle when one was issued.
+Reuse the existing authenticated client for receipt recovery. In another process,
+reconstruct a receipt-only client from the original reachable endpoint and secured
+credential, as described in [shared-CIW recovery](shared-ciw-dialogs.md).
+Ordinary `from_env()`/`from_tunnel()` factories may issue SKILL identity probes;
+they are not a blocked-CIW recovery path. With the receipt-only `client` already
+available, reconcile without submitting another run:
+
+```python
+with MaestroJobManager.from_env(local_root=root, profile="lab") as jobs:
+    job = jobs.load("long-tran-001")
+    if job.request_handle is not None:
+        job = jobs.reconcile(job, client=client)
+```
+
+Receipt recovery is bounded by the daemon's retention and identity. An expired
+receipt, daemon restart, changed endpoint, or unverifiable result remains
+`unknown`; it is never treated as permission to repeat `maeRunSimulation`.
+Preflight session-state/callback-setup receipts are retained too. Reconciliation
+records their original result without resuming submission or interpreting `t`
+as a simulation history. Once that preflight request is settled, the job is
+`failed` because no simulation was started; starting a new job is a separate action.
+
+Durable handles bind the configured and observed GUI host, remote account, job
+namespace, Virtuoso PID, and process start identity. `status()`, `log()`, and
+`reconcile()` reject host, account, or namespace drift before reading remote
+files. Profile names are labels, not transport identity. Schema-1 development
+manifests are rejected by default; `load(run_id, migrate_legacy=True)` is the
+explicit opt-in for binding one to the currently selected endpoint. Migrated
+handles do not use PID liveness without original process-start evidence.
+
+`status().state` is one of `running`, `completed`, `failed`, `missing`, or
+`unknown`. These are observations rather than a monotonic state machine:
+`unknown` or `missing` can later become `completed` when the callback marker is
+visible. A `completed` status only means the Cadence callback ran; it does not
+prove simulator success, output specs, or design acceptance.
+
+The lifecycle log contains only submitted/completed events. Read Maestro
+history and simulator output separately for result validation.
 
 ## Write — Export
 

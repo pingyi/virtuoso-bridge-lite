@@ -1,5 +1,10 @@
 """Maestro (ADE Assembler) session management, config reading, and writing."""
 
+from virtuoso_bridge.virtuoso.maestro.engine import (
+    MaestroEngineConfig, MaestroEngineChangeResult, MaestroEngineError,
+    MaestroEngineOutcomeUnknown, get_engine, set_engine,
+)
+
 from virtuoso_bridge.virtuoso.maestro.lifecycle import (
     open_session,
     close_session,
@@ -18,6 +23,14 @@ from virtuoso_bridge.virtuoso.maestro.history import (
     lock_history,
     set_history_lock,
     unlock_history,
+)
+from virtuoso_bridge.virtuoso.maestro.jobs import (
+    MaestroJob,
+    MaestroJobEndpoint,
+    MaestroJobManager,
+    MaestroJobStatus,
+    MaestroJobSubmissionError,
+    MaestroJobTransport,
 )
 from virtuoso_bridge.virtuoso.maestro.monte_carlo import (
     MC_RUN_MODE,
@@ -96,6 +109,8 @@ from virtuoso_bridge.virtuoso.maestro.waveform_viewer import (
 from virtuoso_bridge.virtuoso.maestro.ops import MaestroOps
 
 __all__ = [
+    "MaestroEngineConfig", "MaestroEngineChangeResult", "MaestroEngineError",
+    "MaestroEngineOutcomeUnknown", "get_engine", "set_engine",
     "MaestroOps",
     # session
     "open_session",
@@ -114,6 +129,13 @@ __all__ = [
     "set_history_lock",
     "lock_history",
     "unlock_history",
+    # persistent asynchronous jobs
+    "MaestroJob",
+    "MaestroJobEndpoint",
+    "MaestroJobManager",
+    "MaestroJobStatus",
+    "MaestroJobSubmissionError",
+    "MaestroJobTransport",
     # Monte Carlo
     "MC_RUN_MODE",
     "MaestroMonteCarloError",

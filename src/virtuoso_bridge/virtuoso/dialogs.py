@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Literal, TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -102,6 +103,23 @@ class DialogOps:
         self._target: DialogTarget | None = None
         self._endpoint: tuple[str, int] | None = None
         self._protect_inflight = False
+        self._actions = None
+
+    def prepare_close(self, window_id: str, *, expected_title: str, timeout: float = 30):
+        """Read an informational window preview, without authorizing any action."""
+        if self._actions is None:
+            from virtuoso_bridge.virtuoso.dialog_actions import DialogActionOps
+            self._actions = DialogActionOps(self)
+        return self._actions.prepare(window_id, expected_title=expected_title, timeout=timeout)
+
+    def close(self, ticket, *, authorized: bool = False, expected_content_sha256: str,
+              timeout: float = 30):
+        """One-shot close of an explicitly approved, unchanged visual snapshot."""
+        if self._actions is None:
+            from virtuoso_bridge.virtuoso.dialog_actions import DialogActionOps
+            self._actions = DialogActionOps(self)
+        return self._actions.close(ticket, authorized=authorized,
+                                   expected_content_sha256=expected_content_sha256, timeout=timeout)
 
     @property
     def enabled(self) -> bool:
@@ -125,7 +143,6 @@ class DialogOps:
         start/restart a bridge. Missing X11 ownership evidence is indeterminate.
         """
         from virtuoso_bridge.virtuoso import x11
-        from virtuoso_bridge.transport.remote_paths import resolve_remote_username
 
         _timeout(timeout)
         if pid is None:
@@ -144,7 +161,7 @@ class DialogOps:
         try:
             runner = self._owner.gui_runner
             payload = x11.inspect_dialogs(
-                runner, resolve_remote_username(configured_user=getattr(runner, "user", None)),
+                runner, "",
                 pid=target.pid, display=target.display, ciw_window=target.ciw_window,
                 profile=profile, timeout=timeout,
             )
@@ -172,18 +189,11 @@ class DialogOps:
             raise ValueError("protect_inflight must be an explicit boolean")
         if pid is not None:
             DialogTarget(pid=pid, display=display, ciw_window=ciw_window)
-        tunnel = self._owner._tunnel
-        if tunnel is not None and getattr(tunnel, "gui_host", None) != getattr(tunnel, "daemon_host", None):
-            raise ValueError("shared guard requires GUI and daemon on the same host; inspect an explicit GUI PID instead")
+        self._require_same_host()
         if self._owner.gui_runner is None and not local_gui:
             raise ValueError("No GUI SSH transport: pass local_gui=True only for a genuinely local GUI, not an SSH-forwarded loopback endpoint")
         deadline = time.monotonic() + timeout
-        caps = self._owner._ensure_daemon_capabilities(deadline, refresh=True)
-        actual_pid = caps.get("virtuoso_pid")
-        if caps.get("auth") != "on" or self._owner._daemon_token is None:
-            raise ValueError("shared guard requires authenticated daemon identity")
-        if not isinstance(actual_pid, int) or isinstance(actual_pid, bool) or actual_pid <= 0:
-            raise ValueError("daemon has no verified Virtuoso PID")
+        caps, actual_pid = self._verified_daemon_pid(deadline)
         if pid is not None and pid != actual_pid:
             raise ValueError("selected PID does not match the connected daemon")
         if protect_inflight:
@@ -198,6 +208,30 @@ class DialogOps:
         self._endpoint = (self._owner.host, self._owner.port)
         self._protect_inflight = protect_inflight
         return report
+
+    def connected_pid(self, *, timeout: float = 15) -> int:
+        """The Virtuoso PID the connected daemon proves, for explicit inspection.
+
+        Uses the authenticated capability handshake: no SKILL is sent and the
+        CIW is not involved, so a blocked CIW still answers.
+        """
+        _timeout(timeout)
+        return self._verified_daemon_pid(time.monotonic() + timeout)[1]
+
+    def _require_same_host(self) -> None:
+        tunnel = self._owner._tunnel
+        if tunnel is not None and getattr(tunnel, "gui_host", None) != getattr(tunnel, "daemon_host", None):
+            raise ValueError("shared guard requires GUI and daemon on the same host; inspect an explicit GUI PID instead")
+
+    def _verified_daemon_pid(self, deadline: float) -> tuple[dict[str, Any], int]:
+        self._require_same_host()
+        caps = self._owner._ensure_daemon_capabilities(deadline, refresh=True)
+        actual_pid = caps.get("virtuoso_pid")
+        if caps.get("auth") != "on" or self._owner._daemon_token is None:
+            raise ValueError("shared guard requires authenticated daemon identity")
+        if not isinstance(actual_pid, int) or isinstance(actual_pid, bool) or actual_pid <= 0:
+            raise ValueError("daemon has no verified Virtuoso PID")
+        return caps, actual_pid
 
     def disable_guard(self) -> None:
         """Disable opt-in protection; does not dismiss or recover anything."""
@@ -215,17 +249,18 @@ class DialogOps:
             )
         else:
             deadline = time.monotonic() + timeout
-            report = self.inspect(timeout=timeout)
-            if report.status == "clear":
-                try:
-                    caps = self._owner._ensure_daemon_capabilities(deadline, refresh=True)
-                    if caps.get("auth") != "on" or caps.get("virtuoso_pid") != self._target.pid:
-                        raise ValueError("daemon identity no longer matches the guarded CIW")
-                except Exception as exc:
-                    report = DialogInspection(
-                        status="indeterminate", target=self._target,
-                        diagnostics=[f"Cannot verify guarded endpoint: {exc}"],
-                    )
+            # Both checks are read-only and both must pass before SKILL is
+            # sent, so the X11 inspection (SSH) and the fresh identity
+            # handshake (tunnel) run side by side instead of one after the other.
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                identity = pool.submit(self._identity_error, deadline)
+                report = self.inspect(timeout=timeout)
+                identity_error = identity.result()
+            if report.status == "clear" and identity_error:
+                report = DialogInspection(
+                    status="indeterminate", target=self._target,
+                    diagnostics=[f"Cannot verify guarded endpoint: {identity_error}"],
+                )
         if report.status == "clear":
             return None
         return VirtuosoResult(
@@ -234,6 +269,16 @@ class DialogOps:
             metadata={"dialog_guard": report.model_dump(), "request_sent": False,
                       "outcome": "not_started"},
         )
+
+    def _identity_error(self, deadline: float) -> str | None:
+        """None if the daemon still proves the guarded CIW's PID, else why not."""
+        try:
+            caps = self._owner._ensure_daemon_capabilities(deadline, refresh=True)
+            if caps.get("auth") != "on" or caps.get("virtuoso_pid") != self._target.pid:
+                raise ValueError("daemon identity no longer matches the guarded CIW")
+        except Exception as exc:
+            return str(exc) or type(exc).__name__
+        return None
 
     def annotate_failure(self, result: VirtuosoResult, timeout: float) -> VirtuosoResult:
         """Inspect out-of-band once; never replay an uncertain operation."""

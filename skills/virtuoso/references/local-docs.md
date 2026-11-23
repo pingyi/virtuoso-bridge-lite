@@ -4,6 +4,14 @@ Verify SKILL code and library-cell usage against the **Cadence documentation
 installed on the target Virtuoso host** — before writing the code, not after it
 fails in CIW.
 
+Check the installed CLI's help before using version-specific commands. If
+`doc-info` is unavailable, identify the target installation from its installed
+metadata and use the available Finder/search tools or actual documentation
+files. Missing a convenience command does not establish a function's absence.
+
+`doc-info` identifies the documentation installation, not the version/process
+already loaded by a running CIW; verify that distinction when it matters.
+
 ## Why this is mandatory
 
 - SKILL function names, signatures, and PDK device parameters are **not
@@ -187,8 +195,12 @@ uses when reading doc paths by hand.
    `CDS_INST_DIR`, `CDSHOME`, `CDS_HOME` from the remote login environment
    (login shell + optional `VB_CADENCE_CSHRC` sourcing).
 
-Both sources are merged and de-duplicated. Override explicitly with
-`--doc-root` (local mode) or by pointing a profile at the right host.
+Both sources are merged and de-duplicated. If both find nothing and a bridge
+tunnel is already running, the running Virtuoso is asked for `cdsGetInstPath()`;
+`<install>/doc` and the SKILL Finder found by the same walk-up from `<install>`
+are used if they exist on the host. Nothing is started or deployed for this.
+Override explicitly with `--doc-root` (directories on the local machine only)
+or by pointing a profile at the right host.
 
 ## Caching
 
@@ -216,7 +228,7 @@ of "doc-search misses a page I know exists" — run with `--rebuild-index`.
 | Symptom | Cause / fix |
 |---------|-------------|
 | `doc-info` reports `virtuoso: unknown (no version evidence)` | No `*.sdp` in the install root and dir name isn't `IC###`. Harmless; docs still work. Check the install root is really a Cadence root. |
-| `no Cadence doc roots found` | Profile points at the wrong host (jump host instead of compute host), or the remote login shell can't find `virtuoso` and the doc env vars are unset. Set `VB_CADENCE_CSHRC[_PROFILE]` to the cshrc that loads the Cadence env, or pass `--doc-root` explicitly. |
+| `no Cadence documentation found` / `no SKILL Finder data found` | Profile points at the wrong host (jump host instead of compute host), or non-interactive shells there can't find `virtuoso` (site wrapper commands) and the doc env vars are unset. Set `VB_CADENCE_CSHRC[_PROFILE]` to a script that exports the Cadence env (`VB_CADENCE_ENV_SHELL=sh` for a POSIX script), or start the bridge and load it in Virtuoso. `--doc-root` only helps for a local copy. |
 | `skill-find` finds nothing for a function that exists | The installed `.fnd` set doesn't cover it — try `doc-search` with the function name. |
 | `skill-info` → "No More Info found" | Function isn't in `api_more_info.tgf` (common for very old or OCEAN-internal functions). Try `skill-find` (syntax still available) or `doc-search`. |
 | `doc-search` misses a known page | Stale index → `--rebuild-index`. Or the root isn't discovered → check `doc-search --list-roots` against `doc-info`. |

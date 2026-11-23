@@ -186,8 +186,8 @@ def main() -> int:
         f"     progn( "
         f"       cv=dbOpenCellViewByType({_q(args.target_lib)} {_q(cell)} \"layout\" nil \"r\") "
         f"       if(cv "
-        f"          sprintf(nil \"instances=%d shapes=%d bbox=%L\" "
-        f"                  length(cv~>instances) length(cv~>shapes) cv~>bBox) "
+        f"          sprintf(nil \"instances=%d shapes=%d vias=%d bbox=%L\" "
+        f"                  length(cv~>instances) length(cv~>shapes) length(cv~>vias) cv~>bBox) "
         f"          nil)) "
         f"     nil)) "
     )
@@ -216,10 +216,8 @@ def main() -> int:
         before strmin finished writing and reported 221×222 instead of
         the new 357×78.
 
-        ``client.run_shell_command`` only returns a SKILL system() status
-        token (``'t'``) in ``.output`` — NOT the captured stdout.  So we
-        read the log via SKILL ``infile``/``gets`` instead, which routes
-        the content through ``execute_skill``'s normal return channel."""
+        The log is read via SKILL ``infile``/``gets``, which routes the
+        content through ``execute_skill``'s normal return channel."""
         read_skill = (
             f"let((p line body) "
             f"  p = infile({_q(log_path)}) "

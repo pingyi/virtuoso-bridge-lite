@@ -75,7 +75,7 @@ class FakeDaemon:
             self.executed.append(skill)
             if 'getShellEnvVar("USER")' in skill or 'getShellEnvVar("LOGNAME")' in skill:
                 body = f'"{self.user}"' if self.user else "nil"
-            elif skill.strip() == "getpid()":
+            elif skill.strip() == "ipcGetPid()":
                 body = self.virtuoso_pid
             else:
                 body = "nil"
@@ -202,7 +202,7 @@ def test_query_falls_back_to_logname() -> None:
 
 
 def test_query_falls_back_to_process_owner_over_ssh() -> None:
-    client = FakeClient({"getpid()": "424242"})
+    client = FakeClient({"ipcGetPid()": "424242"})
     runner = FakeRunner(owner="user2")
     assert query_daemon_user(client, runner=runner) == "user2"
     assert any(cmd.startswith("stat -c %U /proc/424242") for cmd in runner.commands)
@@ -346,6 +346,99 @@ def test_from_tunnel_skips_guard_for_local_tunnels(monkeypatch, foreign_daemon) 
     assert result.status == ExecutionStatus.SUCCESS
 
 
+@pytest.mark.parametrize("factory", ["from_env", "from_tunnel"])
+@pytest.mark.parametrize(
+    "timeout, owner, error",
+    [(30, "user1", None), (30, "user2", "does not match"),
+     (8, "user1", "could not determine")],
+)
+def test_factory_identity_budget_preserves_slow_match_and_refuses_mismatch(
+    monkeypatch, factory, timeout, owner, error,
+) -> None:
+    """Model a 12-second identity response without sleeping or using SSH.
+
+    Keep the real factory and guard policy: the transport boundary alone
+    models latency, so a hidden 10-second cap fails even with a 30s budget.
+    """
+    from virtuoso_bridge.transport.tunnel import SSHClient
+    from virtuoso_bridge.virtuoso.basic import bridge
+
+    monkeypatch.setenv("VB_REMOTE_USER", "user1")
+    monkeypatch.delenv(OVERRIDE_ENV, raising=False)
+    tunnel = _FakeTunnel(9, FakeRunner(owner=owner))
+    monkeypatch.setattr(bridge, "load_vb_env", lambda: None)
+    monkeypatch.setattr(bridge, "resolve_profile", lambda profile: profile)
+    monkeypatch.setattr(bridge, "_acquire_daemon_token", lambda ssh: None)
+    monkeypatch.setattr(SSHClient, "is_running", lambda profile: True)
+    monkeypatch.setattr(SSHClient, "read_state", lambda profile: {"port": 9})
+    monkeypatch.setattr(SSHClient, "from_env", lambda **kwargs: tunnel)
+    monkeypatch.setattr(VirtuosoClient, "_signed_handshake", lambda *args: None)
+    probes = []
+
+    def delayed_identity(self, skill, timeout=None):
+        probes.append((skill, timeout))
+        if timeout < 12:
+            return VirtuosoResult(
+                status=ExecutionStatus.ERROR,
+                errors=["SKILL execution timeout in Virtuoso"],
+            )
+        return VirtuosoResult(status=ExecutionStatus.SUCCESS, output=f'"{owner}"')
+
+    monkeypatch.setattr(VirtuosoClient, "execute_skill", delayed_identity)
+    kwargs = {"timeout": timeout}
+    if factory == "from_tunnel":
+        kwargs["tunnel"] = tunnel
+    if error:
+        with pytest.raises(RuntimeError, match=error) as exc_info:
+            getattr(VirtuosoClient, factory)(**kwargs)
+        if owner == "user1":
+            assert OVERRIDE_ENV not in str(exc_info.value)
+            assert "SSH" in str(exc_info.value)
+    else:
+        getattr(VirtuosoClient, factory)(**kwargs)
+    assert probes == [('getShellEnvVar("USER")', timeout)]
+
+
+def test_signed_identity_uses_requested_timeout_for_ssh(monkeypatch) -> None:
+    monkeypatch.delenv("VB_REMOTE_USER", raising=False)
+    monkeypatch.delenv(OVERRIDE_ENV, raising=False)
+    calls = []
+
+    class SignedClient(FakeClient):
+        def handshake_virtuoso_pid(self, timeout=None):
+            return 4242
+
+    class SlowRunner(FakeRunner):
+        def run_command(self, command, timeout=None):
+            calls.append((command, timeout))
+            return super().run_command(command, timeout=timeout)
+
+    client = SignedClient()
+    check = check_daemon_user(
+        client, profile=None, timeout=45,
+        runner=SlowRunner(whoami="user1", owner="user1"),
+    )
+    assert check.ok
+    assert client.executed == []
+    assert calls == [("whoami", 45), ("stat -c %U /proc/4242 2>/dev/null", 45)]
+
+
+def test_unknown_ssh_login_fails_closed(monkeypatch) -> None:
+    monkeypatch.delenv("VB_REMOTE_USER", raising=False)
+    monkeypatch.delenv(OVERRIDE_ENV, raising=False)
+
+    class TimedOutRunner(FakeRunner):
+        def run_command(self, command, timeout=None):
+            raise TimeoutError("SSH authentication timed out")
+
+    check = check_daemon_user(
+        FakeClient({'getShellEnvVar("USER")': "user1"}),
+        profile=None, runner=TimedOutRunner(), timeout=8,
+    )
+    assert not check.ok and not check.skipped
+    assert "SSH login user" in check.error
+
+
 def test_client_rejects_cross_user_before_any_skill_execution(
     monkeypatch, foreign_daemon
 ) -> None:
@@ -359,7 +452,7 @@ def test_client_rejects_cross_user_before_any_skill_execution(
     with pytest.raises(RuntimeError, match="identity check failed"):
         client._reject_cross_user_daemon_if_reachable(profile=None, timeout=5)
     # Only identity probes may reach the foreign session — no user SKILL.
-    assert all("getShellEnvVar" in s or s.strip() == "getpid()" for s in foreign_daemon.executed)
+    assert all("getShellEnvVar" in s or s.strip() == "ipcGetPid()" for s in foreign_daemon.executed)
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +469,52 @@ def test_client_rejects_cross_user_before_any_skill_execution(
         ("Socket error: [WinError 10061] refused", "not_loaded"),
         ("Socket timeout after 5s", "indeterminate"),
         ("Socket error: boom", "indeterminate"),
+        ("BusyError: IPC lane is busy", "busy"),
+        ("BusyError: IPC lane is poisoned: SKILL did not answer within the request timeout", "busy"),
     ],
 )
 def test_classify_daemon_query_failure(error: str, expected: str) -> None:
     assert classify_daemon_query_failure(error) == expected
+
+
+
+# ---------------------------------------------------------------------------
+# Identity without the CIW, and busy lanes
+# ---------------------------------------------------------------------------
+
+
+def test_query_trusts_the_signed_handshake_pid_without_using_the_ciw() -> None:
+    class _SignedClient(FakeClient):
+        def handshake_virtuoso_pid(self, timeout=None):
+            return 4242
+
+    client = _SignedClient(error="BusyError: IPC lane is busy")
+    runner = FakeRunner(owner="user1")
+
+    assert query_daemon_user(client, runner=runner) == "user1"
+    assert client.executed == []
+    assert any("/proc/4242" in command for command in runner.commands)
+
+
+def test_unsigned_handshake_pid_is_not_trusted(monkeypatch, foreign_daemon) -> None:
+    monkeypatch.setenv("VB_ALLOW_UNAUTHENTICATED_DAEMON", "1")
+    client = VirtuosoClient(host="127.0.0.1", port=foreign_daemon.port, timeout=5)
+
+    assert client.handshake_virtuoso_pid(timeout=5) is None
+
+
+def test_busy_lane_is_reported_without_suggesting_the_override(monkeypatch) -> None:
+    monkeypatch.delenv(OVERRIDE_ENV, raising=False)
+    monkeypatch.setenv("VB_REMOTE_USER", "user1")
+    check = check_daemon_user(
+        FakeClient(error="BusyError: IPC lane is poisoned: SKILL did not answer within the request timeout"), profile=None,
+    )
+    assert not check.ok and check.busy
+    monkeypatch.setattr("virtuoso_bridge.daemon_guard.check_daemon_user", lambda *_a, **_k: check)
+    client = VirtuosoClient(host="127.0.0.1", port=9, timeout=1)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        client._reject_cross_user_daemon_if_reachable(profile=None)
+
+    assert "busy" in str(exc_info.value)
+    assert OVERRIDE_ENV not in str(exc_info.value)

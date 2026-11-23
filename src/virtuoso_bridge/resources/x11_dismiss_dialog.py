@@ -48,6 +48,11 @@ _MAX_FRAME_SEARCH_DEPTH = 8
 _MAX_X11_NATIVE_QUERIES = 4096
 
 
+# XAUTHORITY of the shell that started this helper (usually unset over SSH).
+# Restored whenever a selected X11 environment names no cookie file of its own.
+_SHELL_XAUTHORITY = os.environ.get("XAUTHORITY")
+
+
 class _InspectionFailure(Exception):
     pass
 
@@ -101,6 +106,79 @@ def find_x11_envs(user=None):
             seen.add(key)
             unique.append(candidate)
     return unique
+
+
+def _display_key(display):
+    """(host, display number) of a DISPLAY string; the screen suffix is ignored.
+
+    ":7", ":7.0" and "unix:7" name the same local server; "localhost:10.0"
+    (a TCP or forwarded display) does not.
+    """
+    if not isinstance(display, string_types):
+        return None
+    match = re.match(r"^([^:]*):([0-9]+)(?:\.[0-9]+)?$", display.strip())
+    if not match:
+        return None
+    host = match.group(1)
+    if host == "unix":
+        host = ""
+    return (host, int(match.group(2)))
+
+
+def _same_display(a, b):
+    if a == b:
+        return True
+    key = _display_key(a)
+    return key is not None and key == _display_key(b)
+
+
+def _xauthority_connects(display, xauthority):
+    env = os.environ.copy()
+    env["DISPLAY"] = display
+    if xauthority:
+        env["XAUTHORITY"] = xauthority
+    else:
+        env.pop("XAUTHORITY", None)
+    try:
+        _bounded_check_output(["xwininfo", "-root"], env=env)
+    except _InspectionFailure:
+        return False
+    return True
+
+
+def _explicit_display_env(display):
+    """X11 environment for one explicitly requested DISPLAY.
+
+    xvfb-run and cdsXvfb-run give each X server its own cookie file, named only
+    in the environment of the processes started under it, so the SSH shell's
+    XAUTHORITY usually cannot connect. Take the cookie file from this user's
+    interactive Virtuoso processes on exactly this display, never from another
+    display (window ids repeat across displays), and fall back to the shell's
+    own XAUTHORITY when none names one.
+    """
+    candidates = []
+    for env in find_x11_envs():
+        xauthority = env.get("XAUTHORITY")
+        if xauthority and _same_display(env.get("DISPLAY"), display) and xauthority not in candidates:
+            candidates.append(xauthority)
+    if len(candidates) > 1:
+        working = [xauthority for xauthority in candidates if _xauthority_connects(display, xauthority)]
+        candidates = working or candidates
+    return {"DISPLAY": display, "XAUTHORITY": candidates[0] if candidates else _SHELL_XAUTHORITY}
+
+
+def _pinned_process_env(pid_text, display):
+    """X11 environment of one explicitly selected Virtuoso process (--pid)."""
+    if not (isinstance(pid_text, string_types) and re.match(r"^[0-9]+$", pid_text.strip())) \
+            or int(pid_text.strip()) <= 0:
+        raise _InspectionFailure("--pid requires a positive integer")
+    process_env = _read_process_x11_env(int(pid_text.strip()))
+    if display and not _same_display(display, process_env["DISPLAY"]):
+        raise _InspectionFailure(
+            "supplied DISPLAY %s disagrees with process DISPLAY %s"
+            % (display, process_env["DISPLAY"])
+        )
+    return {"DISPLAY": process_env["DISPLAY"], "XAUTHORITY": process_env.get("XAUTHORITY")}
 
 
 def find_x11_env(user=None):
@@ -418,6 +496,7 @@ def _parse_xprop_inspection(output):
         "client_leader": None,
         "client_machine": None,
         "modal": False,
+        "window_types": [],
         "title": "",
         "class": [],
     }
@@ -441,6 +520,8 @@ def _parse_xprop_inspection(output):
             metadata["client_machine"] = values[0]
         elif line.startswith("_NET_WM_STATE("):
             metadata["modal"] = "_NET_WM_STATE_MODAL" in line
+        elif line.startswith("_NET_WM_WINDOW_TYPE("):
+            metadata["window_types"] = re.findall(r"_NET_WM_WINDOW_TYPE_[A-Z_]+", line)
         elif line.startswith("WM_NAME(") and values:
             titles["wm"] = values[0]
         elif line.startswith("_NET_WM_NAME(") and values:
@@ -511,6 +592,13 @@ class _XWindowAttributes(ctypes.Structure):
     ]
 
 
+class _XErrorEvent(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_int), ("display", ctypes.c_void_p),
+               ("resourceid", ctypes.c_ulong), ("serial", ctypes.c_ulong),
+               ("error_code", ctypes.c_ubyte), ("request_code", ctypes.c_ubyte),
+               ("minor_code", ctypes.c_ubyte)]
+
+
 _X_ERROR_HANDLER = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
 
 
@@ -525,6 +613,7 @@ class _X11InventoryConnection(object):
         self._display = None
         self._closed = False
         self._x_error = False
+        self._error_codes = []
         self._previous_error_handler = None
         self._error_handler_installed = False
         self._error_callback = _X_ERROR_HANDLER(self._handle_x_error)
@@ -597,16 +686,32 @@ class _X11InventoryConnection(object):
 
     def _handle_x_error(self, _display, _event):
         self._x_error = True
+        self._error_codes.append(
+            ctypes.cast(_event, ctypes.POINTER(_XErrorEvent)).contents.error_code if _event else 0)
         return 0
 
     def _begin_request(self):
         self._x_error = False
+        self._error_codes = []
 
     def _request_failed(self, status):
         return not status or self._x_error
 
     def root(self):
         return self._root
+
+    def window_state(self, window_id):
+        """Query the exact XID: only BadWindow proves destruction."""
+        attributes = _XWindowAttributes()
+        self._begin_request()
+        status = self._xlib.XGetWindowAttributes(
+            self._display, int(window_id), ctypes.byref(attributes))
+        if self._error_codes == [3]:  # BadWindow, not an unavailable display.
+            return {"exists": False, "mapped": False}
+        if self._request_failed(status):
+            raise _InspectionFailure("cannot read exact X11 window attributes")
+        # IsUnviewable (mapped child of an unmapped parent) is still mapped.
+        return {"exists": True, "mapped": attributes.map_state != 0}
 
     def children(self, window_id):
         root_return = ctypes.c_ulong()
@@ -789,6 +894,7 @@ def _inspect_window_inventory(
                 "pid", "transient_for", "client_leader", "client_machine", "modal"
             ):
                 record[key] = metadata[key]
+            record["window_types"] = metadata.get("window_types") or []
             record["title"] = metadata.get("title") or ""
             record["class"] = metadata.get("class") or []
             record["client_shell"] = bool(
@@ -1006,7 +1112,12 @@ def _inspection_classification(record):
         "mapped": bool(record.get("mapped")),
     }
     classified = classify_windows([window])[0]
-    if record.get("modal") and classified.get("kind") not in ("ciw", "known_modal"):
+    # Without a window manager (Xvfb) toolkits never set _NET_WM_STATE_MODAL,
+    # and blocking forms can be taller than the size heuristic allows (a PDK
+    # information form is 670x708). The window type the client declares is
+    # the reliable signal.
+    is_dialog_type = "_NET_WM_WINDOW_TYPE_DIALOG" in (record.get("window_types") or [])
+    if (record.get("modal") or is_dialog_type) and classified.get("kind") not in ("ciw", "known_modal"):
         classified["kind"] = "dialog_candidate"
         classified["suggested_action"] = "enter"
     classified["modal"] = bool(record.get("modal"))
@@ -1317,16 +1428,34 @@ def _apply_x11_env(x11_env):
     xauth = x11_env.get("XAUTHORITY")
     if isinstance(xauth, string_types) and xauth:
         os.environ["XAUTHORITY"] = xauth
+    elif _SHELL_XAUTHORITY:
+        os.environ["XAUTHORITY"] = _SHELL_XAUTHORITY      # not a cookie left by a previous display
+    else:
+        os.environ.pop("XAUTHORITY", None)
     return display
 
 
 def _verify_dismissal(result):
-    """Report whether the target is still mapped after an injected action."""
-    if "dismissed" not in result:
+    """An injected action is requested until the exact XID is closed/unmapped."""
+    if "error" in result or ("dismissed" not in result and result.get("status") != "requested"):
         return result
+    target = result.get("child") or result.get("window_id") or result.get("dismissed")
+    result.pop("dismissed", None)
+    result.update(status="requested", window_id=target, action_sent=True,
+                  closure_confirmed=False, still_mapped=None)
     time.sleep(0.3)
-    target = result.get("child") or result.get("dismissed")
-    result["still_mapped"] = bool(_read_window_info(target).get("mapped"))
+    connection = None
+    try:
+        connection = _open_x11_inventory(result.get("display") or os.environ.get("DISPLAY"), os.environ)
+        state = connection.window_state(int(target, 16) if target.startswith("0x") else int(target))
+        result["still_mapped"] = state["mapped"]
+        if state["exists"] is False or state["mapped"] is False:
+            result.update(status="closed", closure_confirmed=True, dismissed=target)
+    except Exception as exc:
+        result["verification_error"] = str(exc)
+    finally:
+        if connection is not None:
+            connection.close()
     return result
 
 
@@ -1531,7 +1660,22 @@ def bootstrap_ciw(display, requested_id, setup_path):
     except ValueError as exc:
         return {"error": str(exc), "window_id": requested_id}
     target = window.get("dismiss_id") or window.get("window_id") or requested_id
+    # Read the selected application's PID before injection. Missing metadata
+    # permits the explicit input, but cannot prove which daemon later started.
+    pid = None
+    try:
+        metadata = _parse_xprop_inspection(_bounded_check_output(
+            ["xprop", "-id", target, "_NET_WM_PID", "WM_CLIENT_MACHINE"],
+            env=dict(os.environ, DISPLAY=display), timeout=2.0))
+        candidate = metadata.get("pid")
+        if candidate and _client_machine_status(metadata.get("client_machine"), _local_hostnames(os.environ)) == "local":
+            process_env = _read_process_x11_env(candidate)
+            if process_env.get("DISPLAY") == display:
+                pid = candidate
+    except _InspectionFailure:
+        pass
     result = _type_ascii_into_window(display, target, expression)
+    result["pid"] = pid
     result["requested_window_id"] = requested_id
     result["display"] = display
     result["title"] = window.get("title") or ""
@@ -1587,10 +1731,13 @@ def dismiss_window(display, win_id_str, title="", x=0, y=0, w=0, h=0, action=Non
             action_name, extra = _send_explicit_action(dpy, xlib, xtst, action)
         except ValueError as exc:
             xlib.XCloseDisplay(dpy)
-            return {"error": str(exc), "dismissed": win_id_str, "child": child_id_str}
+            return {"error": str(exc), "status": "not_started", "action_sent": False,
+                    "window_id": win_id_str, "child": child_id_str}
         xlib.XCloseDisplay(dpy)
         result = {
-            "dismissed": win_id_str,
+            "window_id": win_id_str,
+            "status": "requested",
+            "action_sent": True,
             "child": child_id_str,
             "action": action_name,
             "title": title,
@@ -1799,8 +1946,14 @@ def main():
         print(json.dumps(result, sort_keys=True))
         sys.exit(1 if result.get("status") == "indeterminate" else 0)
 
-    if display:
-        x11_envs = [{"DISPLAY": display, "XAUTHORITY": os.environ.get("XAUTHORITY")}]
+    if inspect_pid is not None:
+        try:
+            x11_envs = [_pinned_process_env(inspect_pid, display)]
+        except _InspectionFailure as exc:
+            print(json.dumps({"error": str(exc)}))
+            sys.exit(2)
+    elif display:
+        x11_envs = [_explicit_display_env(display)]
     else:
         x11_envs = find_x11_envs()
         if not x11_envs:
@@ -1827,7 +1980,7 @@ def main():
             result["requested_window_id"] = dismiss_target
             verified = _verify_dismissal(result)
             print(json.dumps(verified))
-            failed = failed or "error" in verified or verified.get("still_mapped", False)
+            failed = failed or "error" in verified or not verified.get("closure_confirmed", False)
         sys.exit(1 if failed else 0)
 
     if bootstrap_target:

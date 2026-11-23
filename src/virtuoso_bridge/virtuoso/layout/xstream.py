@@ -23,8 +23,12 @@ _XSTREAM_FIELDS = (
     ("log_file", "logFile", "vbOldLogFile"),
     ("run_dir", "runDir", "vbOldRunDir"),
 )
+# xstOutDoTranslate() is non-blocking and IC6.1.8 reads this XStream Out form
+# field when the translation finishes: if it is "true" then, a modal
+# "translation complete" box blocks the CIW. No SKILL hook reports when that
+# happens, so the field is switched off and left off; restoring it after the
+# launch brought the box back.
 _COMPLETION_MESSAGE_FIELD = "showCompletionMsgBox"
-_COMPLETION_MESSAGE_OLD_VARIABLE = "vbOldShowCompletionMsgBox"
 _PRODUCT_ANCHOR_RE = re.compile(
     r"^Product[ \t]*:[ \t]*Virtuoso\(R\)[ \t]+XStream[ \t]+Out",
     re.MULTILINE,
@@ -128,19 +132,10 @@ def xstream_export_gds_skill(request: XStreamExportRequest) -> str:
             raise ValueError(f"{request_field} must be a nonempty string")
         escaped_values[request_field] = escape_skill_string(value)
 
-    old_variables = " ".join(
-        (
-            *(old_variable for _, _, old_variable in _XSTREAM_FIELDS),
-            _COMPLETION_MESSAGE_OLD_VARIABLE,
-        )
-    )
+    old_variables = " ".join(old_variable for _, _, old_variable in _XSTREAM_FIELDS)
     captures = "".join(
         f'{old_variable} = xstGetField("{xstream_field}") '
         for _request_field, xstream_field, old_variable in _XSTREAM_FIELDS
-    )
-    captures += (
-        f'{_COMPLETION_MESSAGE_OLD_VARIABLE} = '
-        f'xstGetField("{_COMPLETION_MESSAGE_FIELD}") '
     )
     setters = "".join(
         f'xstSetField("{xstream_field}" "{escaped_values[request_field]}") '
@@ -150,11 +145,6 @@ def xstream_export_gds_skill(request: XStreamExportRequest) -> str:
     restored_fields = tuple(
         (xstream_field, old_variable)
         for _request_field, xstream_field, old_variable in _XSTREAM_FIELDS
-    ) + (
-        (
-            _COMPLETION_MESSAGE_FIELD,
-            _COMPLETION_MESSAGE_OLD_VARIABLE,
-        ),
     )
     restorations = "".join(
         (
@@ -167,9 +157,22 @@ def xstream_export_gds_skill(request: XStreamExportRequest) -> str:
         for xstream_field, old_variable in restored_fields
     )
 
+    # xstOutDoTranslate() opens a modal "Save All" dialog when cellviews are
+    # unsaved, which blocks the CIW. Refuse instead, before any field changes.
+    library = escaped_values["library"]
+    unsaved_check = (
+        "when(isCallable('dbGetOpenCellViews) "
+        "vbUnsaved = setof(x dbGetOpenCellViews() "
+        f'x~>libName == "{library}" && dbIsCellViewModified(x)) '
+        'when(vbUnsaved error(sprintf(nil "unsaved cellviews would open the XStream '
+        'Save All dialog; save them first: %s" '
+        'buildString(mapcar(lambda((x) sprintf(nil "%s/%s/%s" '
+        'x~>libName x~>cellName x~>viewName)) vbUnsaved) " "))))) '
+    )
+
     return (
         f"let(({old_variables} vbCaptured vbBodyAttempt vbBodyError "
-        "vbCleanup vbCleanupFailures) "
+        "vbCleanup vbCleanupFailures vbUnsaved) "
         'vbBodyError = "XStream export request failed" '
         "unwindProtect("
         "progn("
@@ -177,6 +180,7 @@ def xstream_export_gds_skill(request: XStreamExportRequest) -> str:
         "unless(and(isCallable('xstGetField) isCallable('xstSetField) "
         "isCallable('xstOutDoTranslate)) "
         'error("XStream APIs unavailable")) '
+        f"{unsaved_check}"
         f"{captures}"
         "vbCaptured = t "
         f"{setters}"

@@ -226,7 +226,27 @@ def test_execute_skill_can_disable_connect_retry_for_non_idempotent_calls(
     assert result.status == ExecutionStatus.ERROR
     assert result.errors == [
         "Connection refused to 127.0.0.1:65432. "
-        "Ensure the RAMIC Bridge daemon is running in Virtuoso."
+        "Ensure the RAMIC Bridge daemon is running in Virtuoso. "
+        "For a remote Virtuoso, the local SSH tunnel may be down: "
+        "check with `virtuoso-bridge status`, restore it with `virtuoso-bridge start`."
     ]
     assert clock.sleeps == []
     assert len(factory.created) == 1
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["\x15TimeoutError", "\x15TimeoutError: incomplete request"],
+)
+def test_parse_response_reports_daemon_timeouts(raw: str) -> None:
+    result = VirtuosoClient._parse_response(raw, 0.1)
+
+    assert result.status == ExecutionStatus.ERROR
+    assert result.errors == ["SKILL execution timeout in Virtuoso"]
+
+
+def test_parse_response_keeps_results_that_mention_timeout_error() -> None:
+    result = VirtuosoClient._parse_response('\x02"TimeoutError seen in CDS.log"', 0.1)
+
+    assert result.status == ExecutionStatus.SUCCESS
+    assert result.output == '"TimeoutError seen in CDS.log"'

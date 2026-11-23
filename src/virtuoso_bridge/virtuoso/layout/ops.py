@@ -51,26 +51,38 @@ def layout_bind_current_or_open_cell_view(
     view: str = "layout",
     view_type: str | None = None,
     mode: str = "a",
+    opened_flag: str | None = None,
 ) -> str:
-    """Bind ``cv`` to the active edit layout when it matches, else open it."""
+    """Bind ``cv`` to the active edit layout when it matches, else open it.
+
+    With *opened_flag*, that SKILL variable is set to ``t`` only when the
+    cellview had to be opened, and to ``nil`` when the window's is reused.
+    """
     resolved_view_type = view_type or default_view_type_for(view)
     escaped_lib = escape_skill_string(lib)
     escaped_cell = escape_skill_string(cell)
     escaped_view = escape_skill_string(view)
     escaped_view_type = escape_skill_string(resolved_view_type)
     escaped_mode = escape_skill_string(mode)
+    open_expr = (
+        f"dbOpenCellViewByType(\"{escaped_lib}\" "
+        f"\"{escaped_cell}\" "
+        f"\"{escaped_view}\" "
+        f"\"{escaped_view_type}\" "
+        f"\"{escaped_mode}\")"
+    )
+    flag_reset = f"{opened_flag} = nil " if opened_flag else ""
+    if opened_flag:
+        open_expr = f"progn({opened_flag} = t {open_expr})"
     return (
         "cv = let((rbEditCv) "
         "rbEditCv = geGetEditCellView() "
+        f"{flag_reset}"
         f"if(rbEditCv && rbEditCv~>libName == \"{escaped_lib}\" "
         f"&& rbEditCv~>cellName == \"{escaped_cell}\" "
         f"&& rbEditCv~>viewName == \"{escaped_view}\" "
         "then rbEditCv "
-        f"else dbOpenCellViewByType(\"{escaped_lib}\" "
-        f"\"{escaped_cell}\" "
-        f"\"{escaped_view}\" "
-        f"\"{escaped_view_type}\" "
-        f"\"{escaped_mode}\")))"
+        f"else {open_expr}))"
     )
 
 def layout_create_param_inst(
@@ -310,24 +322,33 @@ def layout_select_box(
     view_type: str | None = None,
     mode: str = "a",
 ) -> str:
-    """Build SKILL to select figures in a bounding box."""
+    """Build SKILL to select the figures enclosed by a bounding box.
+
+    Selection is a window operation: the box is applied in the window that
+    shows the current layout cellview. ``replace`` clears the selection
+    first, ``add`` extends it and ``sub`` removes the enclosed figures.
+    """
     cv_expr = _layout_get_edit_cv_expr(view=view, view_type=view_type, mode=mode)
     bbox_skill = _bbox_expr(bbox)
     normalized = mode_name.strip().lower()
+    # geSelectArea/geDeselectArea take (window points); passing the box as the
+    # first argument fails with "argument #2 should be a window type".
     if normalized == "replace":
-        selection_expr = f"progn(geDeselectAllFig(cv) geSelectArea({bbox_skill}))"
+        selection_expr = f"geDeselectAllFig(cv) geSelectArea(win {bbox_skill})"
     elif normalized == "add":
-        selection_expr = f"geAddSelectBox(nil {bbox_skill})"
+        selection_expr = f"geSelectArea(win {bbox_skill})"
     elif normalized in {"sub", "subtract", "remove"}:
-        selection_expr = f"geDeselectArea({bbox_skill})"
+        selection_expr = f"geDeselectArea(win {bbox_skill})"
     else:
         raise ValueError(f"Unsupported selection mode: {mode_name}")
     return (
-        "prog((cv) "
+        "prog((cv win) "
         f"cv = {cv_expr} "
-        'unless(cv return("ERROR: no layout window open")) '
+        'unless(cv error("no layout window open")) '
+        "win = car(setof(w hiGetWindowList() car(errset(geGetWindowCellView(w))) == cv)) "
+        'unless(win error("no window shows the layout cellview")) '
         f"{selection_expr} "
-        'return(sprintf(nil "selected %d figure(s)" geGetSelSetCount())))'
+        'return(sprintf(nil "selected %d figure(s)" length(geGetSelSet(cv)))))'
     )
 
 def layout_delete_selected(
@@ -347,6 +368,34 @@ def layout_delete_selected(
         'return(sprintf(nil "deleted %d selected figure(s)" count)))'
     )
 
+def _layout_read_cellview(
+    lib: str,
+    cell: str,
+    view: str,
+    view_type: str | None,
+    variables: str,
+    body: str,
+) -> str:
+    """Borrow an open view; release only a view opened by this read."""
+    lib_name, cell_name, view_name = (
+        f'"{escape_skill_string(name)}"' for name in (lib, cell, view)
+    )
+    names = f"{lib_name} {cell_name} {view_name}"
+    kind = escape_skill_string(view_type or default_view_type_for(view))
+    return (
+        f"prog((cv ownsCv libId {variables}) "
+        "if(isCallable('dbFindOpenCellViewByName) then "
+        f"cv = dbFindOpenCellViewByName({names}) "
+        "else "
+        f"libId = ddGetObj({lib_name}) "
+        f"when(libId cv = dbFindOpenCellView(libId {cell_name} {view_name}))) "
+        f'unless(cv cv = dbOpenCellViewByType({names} "{kind}" "r") ownsCv = cv) '
+        f'unless(cv return(sprintf(nil "ERROR: cannot open %s/%s/%s" {names}))) '
+        f"return(unwindProtect(progn({body}) "
+        'when(ownsCv unless(dbClose(cv) error("layout reader close failed"))))))'
+    )
+
+
 def layout_read_summary(
     lib: str,
     cell: str,
@@ -354,27 +403,29 @@ def layout_read_summary(
     view: str = "layout",
     view_type: str | None = None,
 ) -> str:
-    """Build SKILL to read a summary of shapes and instances from a layout cellview."""
-    resolved_view_type = view_type or default_view_type_for(view)
+    """Build SKILL to read a summary, releasing only a view it opens.
+
+    An already-open view is borrowed unchanged, including unsaved edits; this
+    is not a forced reload of another process's latest saved disk state.
+    """
     escaped_lib = escape_skill_string(lib)
     escaped_cell = escape_skill_string(cell)
     escaped_view = escape_skill_string(view)
-    escaped_view_type = escape_skill_string(resolved_view_type)
-    return (
-        "prog((cv buf bb) "
-        f'cv = dbOpenCellViewByType("{escaped_lib}" "{escaped_cell}" "{escaped_view}" "{escaped_view_type}" "r") '
-        f'unless(cv return(sprintf(nil "ERROR: cannot open %s/%s/{escaped_view}" "{escaped_lib}" "{escaped_cell}"))) '
-        f'buf = sprintf(nil "Layout: %s/%s/{escaped_view}  (%d shapes  %d instances)\\n" "{escaped_lib}" "{escaped_cell}" length(cv~>shapes) length(cv~>instances)) '
+    body = (
+        f'buf = sprintf(nil "Layout: %s/%s/%s  (%d shapes  %d vias  %d instances)\\n" "{escaped_lib}" "{escaped_cell}" "{escaped_view}" length(cv~>shapes) length(cv~>vias) length(cv~>instances)) '
         'foreach(shape cv~>shapes '
         'buf = strcat(buf sprintf(nil "  %s [%s %s]" shape~>objType car(shape~>lpp) cadr(shape~>lpp))) '
         'when(shape~>objType == "rect" '
         'bb = shape~>bBox '
         'buf = strcat(buf sprintf(nil "  (%.3f %.3f)-(%.3f %.3f)" xCoord(car(bb)) yCoord(car(bb)) xCoord(cadr(bb)) yCoord(cadr(bb))))) '
         'buf = strcat(buf "\\n")) '
+        'foreach(via cv~>vias '
+        'buf = strcat(buf sprintf(nil "  via: %s [%s]  @ (%.3f %.3f)\\n" via~>viaHeader~>viaDefName via~>objType xCoord(via~>origin) yCoord(via~>origin)))) '
         'foreach(inst cv~>instances '
         'buf = strcat(buf sprintf(nil "  inst: %s  [%s/%s]  @ (%.3f %.3f)\\n" inst~>name inst~>libName inst~>cellName xCoord(inst~>xy) yCoord(inst~>xy)))) '
-        "return(buf))"
+        "buf"
     )
+    return _layout_read_cellview(lib, cell, view, view_type, "buf bb", body)
 
 def layout_read_geometry(
     lib: str,
@@ -382,42 +433,84 @@ def layout_read_geometry(
     *,
     view: str = "layout",
     view_type: str | None = None,
+    include_groups: bool = False,
 ) -> str:
-    """Build SKILL to dump layout geometry in a parseable line-oriented format."""
-    resolved_view_type = view_type or default_view_type_for(view)
-    escaped_lib = escape_skill_string(lib)
-    escaped_cell = escape_skill_string(cell)
-    escaped_view = escape_skill_string(view)
-    escaped_view_type = escape_skill_string(resolved_view_type)
-    return (
-        "prog((cv out) "
-        f'cv = dbOpenCellViewByType("{escaped_lib}" "{escaped_cell}" "{escaped_view}" "{escaped_view_type}" "r") '
-        f'unless(cv return(sprintf(nil "ERROR: cannot open %s/%s/{escaped_view}" "{escaped_lib}" "{escaped_cell}"))) '
+    """Build SKILL to dump geometry, releasing only a view it opens.
+
+    An already-open view is borrowed unchanged, including unsaved edits; this
+    is not a forced reload of another process's latest saved disk state.
+    """
+    body = (
         'out = "" '
         'foreach(shape cv~>shapes '
         'out = strcat(out sprintf(nil '
         '"shape\\tobjType=%s\\tlayer=%s\\tpurpose=%s\\tbbox=%L\\tpoints=%L\\txy=%L\\torient=%L\\ttext=%L\\n" '
         'shape~>objType car(shape~>lpp) cadr(shape~>lpp) shape~>bBox shape~>points shape~>xy shape~>orient shape~>theLabel))) '
-        'foreach(inst cv~>instances '
+        'foreach(via cv~>vias '
+        'out = strcat(out sprintf(nil '
+        '"via\\tobjType=%s\\tvia=%s\\txy=%L\\torient=%L\\tbbox=%L\\n" '
+        'via~>objType via~>viaHeader~>viaDefName via~>origin via~>orient via~>bBox))) '
+        # Some releases expose mosaics in both collections; visit each once.
+        'foreach(inst append(cv~>instances setof(m cv~>mosaics !member(m cv~>instances))) '
+        'if(inst~>objType == "mosaic" then '
+        'out = strcat(out sprintf(nil '
+        '"mosaic\\tname=%s\\tlib=%L\\tcell=%L\\tview=%L\\txy=%L\\torient=%L\\trows=%L\\tcolumns=%L\\tbbox=%L\\n" '
+        'inst~>name inst~>libName inst~>cellName inst~>viewName inst~>xy inst~>orient '
+        'inst~>rows inst~>columns inst~>bBox)) '
+        'else '
         'out = strcat(out sprintf(nil '
         '"instance\\tname=%s\\tlib=%s\\tcell=%s\\tview=%s\\txy=%L\\torient=%L\\tbbox=%L\\ttransform=%L\\n" '
         'inst~>name inst~>libName inst~>cellName inst~>viewName inst~>xy inst~>orient '
-        'dbTransformBBox(inst~>master~>bBox inst~>transform) inst~>transform))) '
-        "return(out))"
+        'inst~>bBox inst~>transform)))) '
+        "out"
     )
+    variables = "out"
+    if include_groups:
+        from virtuoso_bridge.virtuoso.layout.groups import _group_rows
+
+        body = body.removesuffix("out") + _group_rows() + 'out = strcat(out sprintf(nil "groups\\tdata=%L\\n" reverse(rows))) out'
+        variables += " rows members"
+    return _layout_read_cellview(lib, cell, view, view_type, variables, body)
+
+# Set by LayoutEditor for the duration of a create()/modify() batch, so the
+# content operations below act on the edited cellview there rather than on
+# whatever layout window happens to be current.
+LAYOUT_EDIT_CV_MARKER = "vbLayoutEditCv"
+
+
+def _layout_target_cv_expr(
+    cv_expr: str | None,
+    *,
+    view: str,
+    view_type: str | None,
+    mode: str,
+) -> str:
+    """Explicit cellview, else the editor's cellview, else the current window."""
+    if cv_expr is not None:
+        return cv_expr
+    window = _layout_get_edit_cv_expr(view=view, view_type=view_type, mode=mode)
+    marker = LAYOUT_EDIT_CV_MARKER
+    return f"if(boundp('{marker}) && {marker} then {marker} else {window})"
+
+
+_NO_LAYOUT_ERROR = (
+    'unless(cv error("no layout cellview: open a layout window or run inside '
+    'client.layout.create()/modify()")) '
+)
 
 def layout_list_shapes(
     *,
     view: str = "layout",
     view_type: str | None = None,
     mode: str = "a",
+    cv_expr: str | None = None,
 ) -> str:
-    """Build SKILL to list shape type and LPP from the open layout."""
-    cv_expr = _layout_get_edit_cv_expr(view=view, view_type=view_type, mode=mode)
+    """Build SKILL to list shape type and LPP. Inside client.layout.create()/modify() it uses the edited cellview; standalone, the current layout window. Pass cv_expr to choose explicitly."""
+    target = _layout_target_cv_expr(cv_expr, view=view, view_type=view_type, mode=mode)
     return (
         "prog((cv out) "
-        f"cv = {cv_expr} "
-        'unless(cv return("ERROR: no layout window open")) '
+        f"cv = {target} "
+        f"{_NO_LAYOUT_ERROR}"
         'out = "" '
         'foreach(shape cv~>shapes '
         'out = strcat(out sprintf(nil "%s [%s %s]\\n" shape~>objType car(shape~>lpp) cadr(shape~>lpp)))) '
@@ -431,15 +524,16 @@ def layout_delete_shapes_on_layer(
     view: str = "layout",
     view_type: str | None = None,
     mode: str = "a",
+    cv_expr: str | None = None,
 ) -> str:
-    """Build SKILL to delete all shapes on a given layer/purpose from the open layout."""
-    cv_expr = _layout_get_edit_cv_expr(view=view, view_type=view_type, mode=mode)
+    """Build SKILL to delete all shapes on one layer/purpose. Inside client.layout.create()/modify() it uses the edited cellview; standalone, the current layout window. Pass cv_expr to choose explicitly."""
+    target = _layout_target_cv_expr(cv_expr, view=view, view_type=view_type, mode=mode)
     escaped_layer = escape_skill_string(layer)
     escaped_purpose = escape_skill_string(purpose)
     return (
         "prog((cv shapes count) "
-        f"cv = {cv_expr} "
-        'unless(cv return("ERROR: no layout window open")) '
+        f"cv = {target} "
+        f"{_NO_LAYOUT_ERROR}"
         "shapes = cv~>shapes "
         "count = 0 "
         'foreach(shape shapes when(car(shape~>lpp) == '
@@ -453,13 +547,14 @@ def layout_clear_routing(
     view: str = "layout",
     view_type: str | None = None,
     mode: str = "a",
+    cv_expr: str | None = None,
 ) -> str:
-    """Build SKILL to delete all shapes from the open layout and save it."""
-    cv_expr = _layout_get_edit_cv_expr(view=view, view_type=view_type, mode=mode)
+    """Build SKILL to delete all shapes (instances kept) and save. Inside client.layout.create()/modify() it uses the edited cellview; standalone, the current layout window. Pass cv_expr to choose explicitly."""
+    target = _layout_target_cv_expr(cv_expr, view=view, view_type=view_type, mode=mode)
     return (
         "prog((cv count) "
-        f"cv = {cv_expr} "
-        'unless(cv return("ERROR: no layout window open")) '
+        f"cv = {target} "
+        f"{_NO_LAYOUT_ERROR}"
         "count = length(cv~>shapes) "
         "foreach(shape cv~>shapes dbDeleteObject(shape)) "
         "dbSave(cv) "

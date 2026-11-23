@@ -13,6 +13,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -37,6 +38,15 @@ from virtuoso_bridge.transport.transfer import (
 )
 
 logger = logging.getLogger(__name__)
+
+def verbose_from_env() -> bool:
+    """Whether ``VB_VERBOSE`` asks for each SSH/scp command on stderr.
+
+    Commands are always written to the command log; the stderr echo is for
+    interactive diagnosis (``virtuoso-bridge <command> --verbose``).
+    """
+    return os.environ.get("VB_VERBOSE", "").strip().lower() in {"1", "true", "yes", "on"}
+
 
 def _setup_command_log() -> None:
     """Add a file handler to the package root logger."""
@@ -64,6 +74,43 @@ def _mark_interpreter_shutdown() -> None:
     _INTERPRETER_SHUTTING_DOWN = True
 
 atexit.register(_mark_interpreter_shutdown)
+
+
+def _pid_is_alive(pid: Any) -> bool:
+    """Query process liveness without sending Windows console events."""
+    try:
+        parsed = int(pid)
+        if parsed <= 0:
+            return False
+        if os.name != "nt":
+            os.kill(parsed, 0)
+            return True
+        if parsed > 0xFFFFFFFF:
+            return False
+
+        # Windows os.kill(pid, 0) sends CTRL_C_EVENT; it is not a POSIX probe.
+        # SYNCHRONIZE permits waiting on a process without termination access.
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(0x00100000, False, parsed)  # SYNCHRONIZE
+        if not handle:
+            return ctypes.get_last_error() == 5  # Access denied: do not assume dead.
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == 0x00000102  # WAIT_TIMEOUT
+        finally:
+            kernel32.CloseHandle(handle)
+    except PermissionError:
+        return True
+    except (TypeError, ValueError, OverflowError, OSError):
+        return False
 
 
 def _windows_no_window_kwargs(
@@ -472,7 +519,7 @@ class SSHRunner:
 
         logger.info("Starting SSH tunnel: %s", " ".join(cmd))
         if self._verbose:
-            print(f"[cmd] {' '.join(cmd)}", flush=True)
+            print(f"[cmd] {' '.join(cmd)}", file=sys.stderr, flush=True)
 
         if os.name == "nt":
             # Capture stderr so we can surface "banner exchange timeout"
@@ -599,12 +646,14 @@ class SSHRunner:
         if self._tunnel_proc is not None and self._tunnel_proc.poll() is None:
             return True
         if self._tunnel_using_external and self._tunnel_pid:
-            try:
-                os.kill(self._tunnel_pid, 0)
-                return True
-            except (OSError, PermissionError):
-                pass
+            return _pid_is_alive(self._tunnel_pid)
         return False
+
+    def detach_port_forward(self) -> None:
+        """Forget an attached forward without terminating its SSH process."""
+        self._tunnel_proc = None
+        self._tunnel_pid = None
+        self._tunnel_using_external = False
 
     @property
     def tunnel_pid(self) -> int | None:
@@ -699,7 +748,7 @@ class SSHRunner:
     def _print_cmd(self, cmd: list[str]) -> None:
         logger.info("[local] %s", " ".join(cmd))
         if self._verbose:
-            print(f"[cmd] {' '.join(cmd)}", flush=True)
+            print(f"[cmd] {' '.join(cmd)}", file=sys.stderr, flush=True)
 
     # Transport-level SSH error patterns that indicate a flaky cold
     # handshake rather than a server-side problem.  Seeing any of these
@@ -949,7 +998,7 @@ class SSHRunner:
             # picks up the no-mux config on the next try.
             cmd = self._build_ssh_base() + [plan.remote_command]
             if self._verbose:
-                print(f"[cmd] {' '.join(cmd)}  # upload -> {remote_path}", flush=True)
+                print(f"[cmd] {' '.join(cmd)}  # upload -> {remote_path}", file=sys.stderr, flush=True)
             r = subprocess.run(
                 cmd,
                 input=text_bytes,
@@ -1095,6 +1144,7 @@ class SSHRunner:
             if self._verbose:
                 print(
                     f"[cmd] {' '.join(local_command)} | {' '.join(ssh_command)}",
+                    file=sys.stderr,
                     flush=True,
                 )
             tar_process: subprocess.Popen[Any] | None = None
@@ -1184,6 +1234,7 @@ class SSHRunner:
             print(
                 f"[cmd] {' '.join(ssh_command)} | {' '.join(local_command)}"
                 f"  # download {plan.remote_path} -> {plan.local_path}",
+                file=sys.stderr,
                 flush=True,
             )
         logger.debug(
@@ -1499,7 +1550,7 @@ class SSHRunner:
                 # Trim heredoc payload: cat > path <<'TOKEN' → cat > path
                 if "<<'" in summary:
                     summary = summary.split("<<'")[0].rstrip()
-                print(f"[cmd] {self._host}: {summary}", flush=True)
+                print(f"[cmd] {self._host}: {summary}", file=sys.stderr, flush=True)
         token = uuid.uuid4().hex
         begin_marker = f"__vb_STDOUT_B64_BEGIN_{token}__"
         stderr_marker = f"__vb_STDERR_B64_BEGIN_{token}__"

@@ -5,6 +5,43 @@ are text, which are binary, which tool to use to modify them safely.
 
 Written for IC6.1.8. Formats are stable across minor versions.
 
+## Session readback versus saved disk state
+
+Bridge reads run in the selected resident Virtuoso process, not in a fresh OA
+reader. After another process saves a cellview, a readback in an existing session
+is not proof that it has reloaded the latest disk state. Closing one handle and
+reopening may still leave other references or editor windows holding that view.
+The bridge's Python daemon is not an independent OA database session.
+
+`layout_read_geometry()` and `layout_read_summary()` borrow a view already open
+in the selected process without opening or closing another reference. Otherwise
+they open it read-only and close it after serialization, including on an error.
+This prevents these helpers from accumulating references that retain stale
+geometry. A borrowed view deliberately includes the session's unsaved edits;
+it is not a fresh-disk snapshot. Updating the Python client does not release
+references left by older code, raw SKILL, editor windows or other callers.
+
+For raw SKILL, balance each open that you own and protect cleanup on errors.
+Check for an already-open view before taking ownership; a local variable going
+out of scope does not close its database reference. These layout helpers do not
+manage the lifetime of arbitrary `eval`/`load` scripts.
+
+For suspected stale reads, record the resolved library path, Virtuoso PID/version,
+open modes and exact open/read/close/save sequence in each session. Compare file
+hashes and readback in a dedicated fresh reader, with the same library mapping
+and after the writer has explicitly saved. Preserve any unsaved editor work.
+A fresh-process stream-out is additional evidence of saved state, not proof that
+an already-running session is synchronized. An unchanged `data.dm` alone does
+not establish that `dbSave` bypassed DD or failed to save OA geometry.
+
+There is no supported blanket `--fresh` operation. Before proposing a refresh,
+verify the target version's API in [local-docs.md](local-docs.md) and establish
+which process owns every open view. Coordinate with the user before closing or
+purging views/libraries or restarting a CIW; these can discard edits. Deleting
+lock files or rewriting DD metadata is not a freshness remedy. For a report,
+prefer a minimal two-session example using plain geometry and a scratch library,
+with no proprietary PDK data.
+
 ## Three-tier structure
 
 ```

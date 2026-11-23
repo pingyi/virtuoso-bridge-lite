@@ -39,6 +39,10 @@ _SEVERITY_RE = re.compile(
     r"^\s*(?:\*+\s*)?(ERROR|WARNING|WARN|INFO)(?:\s*\*+)?\b",
     re.IGNORECASE,
 )
+# CDS.log prefixes each line with its stream: "\o " output, "\w " warning,
+# "\e " error, "\i " input and so on.
+_LOG_TAG_RE = re.compile(r"^\\([A-Za-z])(?:\s+|$)")
+_TAG_SEVERITY: dict[str, DiagnosticSeverity] = {"e": "error", "w": "warning"}
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,7 @@ class SchematicCheckSaveResult:
     modal_windows: tuple[dict[str, Any], ...] = ()
     screenshot: Path | None = None
     raw_output: str = ""
+    request_metadata: dict[str, Any] | None = None
 
     @property
     def ok(self) -> bool:
@@ -191,6 +196,7 @@ def check_and_save_schematic(
             timeout=timeout,
             capture_screenshot=capture_screenshot,
             screenshot_output=screenshot_output,
+            request_metadata=dict(getattr(response, "metadata", None) or {}),
         )
 
     try:
@@ -349,18 +355,25 @@ def _classify_log_lines(
     diagnostics: list[SchematicDiagnostic] = []
     for raw_line in lines:
         line = raw_line.strip()
+        tag_match = _LOG_TAG_RE.match(line)
+        tag_severity = None
+        if tag_match:
+            tag_severity = _TAG_SEVERITY.get(tag_match.group(1).lower())
+            line = line[tag_match.end():]
         if not line:
             continue
         severity_match = _SEVERITY_RE.search(line)
         code_match = _CODE_RE.search(line)
-        if severity_match is None and code_match is None:
+        if severity_match is None and code_match is None and tag_severity is None:
             continue
-        severity_text = severity_match.group(1).lower() if severity_match else "info"
         severity: DiagnosticSeverity
+        severity_text = severity_match.group(1).lower() if severity_match else None
         if severity_text == "error":
             severity = "error"
         elif severity_text in {"warning", "warn"}:
             severity = "warning"
+        elif severity_text is None and tag_severity is not None:
+            severity = tag_severity
         else:
             severity = "info"
         diagnostics.append(
@@ -385,6 +398,7 @@ def _failed_transport_result(
     timeout: int,
     capture_screenshot: bool,
     screenshot_output: str | Path | None,
+    request_metadata: dict[str, Any] | None = None,
 ) -> SchematicCheckSaveResult:
     timed_out = any(
         "timeout" in message.lower() or "timed out" in message.lower()
@@ -463,6 +477,7 @@ def _failed_transport_result(
         modal_windows=windows,
         screenshot=screenshot,
         raw_output=output,
+        request_metadata=request_metadata,
     )
 
 

@@ -1,521 +1,272 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="icon" type="image/svg+xml" href="favicon.svg">
-  <title>virtuoso-bridge-lite</title>
-  <style>
-    :root {
-      --bg: #0d1117;
-      --card: #161b22;
-      --border: #30363d;
-      --text: #e6edf3;
-      --muted: #8b949e;
-      --blue: #58a6ff;
-      --purple: #bc8cff;
-      --orange: #f78166;
-      --green: #3fb950;
-    }
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      line-height: 1.6;
-    }
-    .container { max-width: 900px; margin: 0 auto; padding: 0 24px; }
-    .hero { text-align: center; padding: 80px 0 32px; }
-    .hero h1 { font-size: 2.8rem; font-weight: 800; letter-spacing: -1px; margin-bottom: 16px; }
-    .hero h1 .lite { color: var(--purple); font-weight: 400; }
-    .hero p { font-size: 1.15rem; color: var(--muted); max-width: 600px; margin: 0 auto 32px; }
-    .hero-buttons { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
-    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px; border-radius: 8px; font-size: 1rem; font-weight: 600; text-decoration: none; transition: opacity 0.2s; }
-    .btn:hover { opacity: 0.85; }
-    .btn-primary { background: var(--blue); color: #fff; }
-    .btn-secondary { background: var(--card); color: var(--text); border: 1px solid var(--border); }
-
-    .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; padding: 32px 0; }
-    @media (max-width: 640px) { .features { grid-template-columns: 1fr; } }
-    .feature { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; }
-    .feature h3 { font-size: 1rem; margin-bottom: 8px; }
-    .feature p { font-size: 0.9rem; color: var(--muted); }
-
-    .section { padding: 48px 0; }
-    .section h2 { font-size: 1.6rem; font-weight: 700; margin-bottom: 24px; text-align: center; }
-    .section h3 { font-size: 1.1rem; margin-bottom: 12px; }
-    pre { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; overflow-x: auto; font-size: 0.9rem; line-height: 1.7; margin-bottom: 16px; }
-    code { font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace; }
-    .kw { color: var(--purple); }
-    .str { color: var(--green); }
-    .fn { color: var(--blue); }
-    .cmt { color: var(--muted); }
-    .cmd { color: var(--orange); }
-
-    table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
-    th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
-    th { color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; }
-    td code { color: var(--blue); background: none; font-size: 0.85rem; }
-    .api-group { margin-bottom: 32px; }
-    .api-group h3 { font-size: 1.1rem; margin-bottom: 12px; color: var(--text); }
-
-    .comparison { overflow-x: auto; }
-    .comparison table td:first-child { font-weight: 600; white-space: nowrap; }
-
-    .footer { text-align: center; padding: 48px 0 32px; color: var(--muted); font-size: 0.85rem; border-top: 1px solid var(--border); }
-    .footer a { color: var(--blue); text-decoration: none; }
-    .footer a:hover { text-decoration: underline; }
-    .traffic-stats { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 18px; margin-top: 12px; color: var(--muted); }
-    .traffic-stats strong { color: var(--text); font-weight: 700; }
-
-    .note { background: var(--card); border-left: 3px solid var(--blue); border-radius: 4px; padding: 12px 16px; margin: 16px 0; font-size: 0.9rem; color: var(--muted); }
-    .note strong { color: var(--text); }
-
-    .citation { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; font-size: 0.85rem; font-family: monospace; white-space: pre; overflow-x: auto; margin-bottom: 16px; color: var(--muted); }
-  </style>
-</head>
-<body>
-<div class="container">
-
-  <div class="hero">
-    <p style="margin-bottom:24px"><img src="https://raw.githubusercontent.com/Arcadia-1/virtuoso-bridge-lite/main/assets/banner.svg" alt="virtuoso-bridge-lite" style="max-width:100%;border-radius:8px"/></p>
-    <p>A new infrastructure for Agentic Analog and Mixed-Signal Design. LLM Agents drive Cadence Virtuoso instances &mdash; locally or remotely &mdash; turning tedious handcrafting into automated design flows.</p>
-    <div class="hero-buttons">
-      <a href="https://github.com/Arcadia-1/virtuoso-bridge-lite" class="btn btn-primary">GitHub</a>
-      <a href="#getting-started" class="btn btn-secondary">Getting Started</a>
+<!doctype html>
+<html lang="en" data-lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#ffffff" />
+    <title>Virtuoso Bridge — AI agents for Cadence Virtuoso and Spectre</title>
+    <meta name="description" content="A lightweight bridge for Spectre simulation and PDK/CDF callbacks, with schematic, symbol and GDS operations through Python, SKILL or the CLI." />
+    <meta name="site-title-en" content="Virtuoso Bridge — AI agents for Cadence Virtuoso and Spectre" />
+    <meta name="site-title-zh" content="Virtuoso Bridge — 让 AI 智能体操作 Virtuoso 与 Spectre" />
+    <meta property="og:title" content="Virtuoso Bridge — AI agents for Cadence Virtuoso and Spectre" />
+    <meta property="og:description" content="A lightweight bridge for Spectre simulation and PDK/CDF callbacks, with schematic, symbol and GDS operations through Python, SKILL or the CLI." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://virtuoso-bridge.tokenzhang.com/" />
+    <meta
+      property="og:image"
+      content="https://virtuoso-bridge.tokenzhang.com/assets/social-card.png?v=20261012-vb"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="canonical" href="https://virtuoso-bridge.tokenzhang.com/" />
+    <link rel="icon" href="/favicon.svg?v=20261012-vb" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20261012-vb" />
+    <script>
+      document.documentElement.classList.add("js");
+      try {
+        var l =
+          new URLSearchParams(location.search).get("lang") ||
+          localStorage.getItem("vb-language") ||
+          "en";
+        document.documentElement.dataset.lang = l === "zh" ? "zh" : "en";
+        document.documentElement.lang = l === "zh" ? "zh-CN" : "en";
+      } catch (e) {}
+    </script>
+    <link rel="stylesheet" href="/site.css?v=20261030-controls" />
+<script src="/site.js?v=20261013-navigation" defer></script><link rel="stylesheet" href="/assets/home/archive-scoped.css?v=20261030-controls"><link rel="stylesheet" href="/assets/home/home.css?v=20261030-controls"><script type="module" src="/assets/home/archive.mjs?v=20261030-controls"></script><script type="module" src="/assets/home/home.mjs?v=20261030-controls"></script><link rel="stylesheet" href="/assets/home/cool-paper.css?v=20261030-controls"><script type="module" src="/analytics/track.js?v=20261012-light"></script>
+<link rel="stylesheet" href="/assets/home/waterfall.css?v=20261030-controls"><link rel="stylesheet" href="/assets/home/instruction-cards.css?v=20261101-headings"><link rel="stylesheet" href="/assets/home/comparison-files.css?v=20261101-type-final"></head>
+<body><a class="skip-link" href="#main"
+      ><span class="en">Skip to content</span
+      ><span class="zh">跳转到正文</span></a
+    ><header class="site-header">
+      <div class="wrap header-inner">
+        <div class="header-left"><a
+          class="brand"
+          href="/"
+          data-internal
+          aria-label="Virtuoso Bridge home"
+          ><img
+            src="/assets/mark.svg?v=20261012-vb"
+            width="24"
+            height="24"
+            alt=""
+          /><span>Virtuoso Bridge</span></a
+        ><a class="nav-guide" href="/guide/" data-internal aria-label="Documentation / 使用文档" title="Docs / 使用文档"
+            ><svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path
+                d="M12 5c-3-2-6-2-9-1v15c3-1 6-1 9 1 3-2 6-2 9-1V4c-3-1-6-1-9 1Zm0 0v15"
+              /></svg
+            ><span class="en">Docs</span><span class="zh">使用文档</span></a
+          ></div>
+        <nav class="header-nav" aria-label="Project and author / 项目与作者">
+          <a class="site-link" href="https://analog-canvas.tokenzhang.com/" target="_blank" rel="noopener" aria-label="Analog Canvas" title="Analog Canvas">
+            <span class="site-link-logo" aria-hidden="true"><img src="/assets/analog-canvas.svg" width="24" height="24" alt="" /></span>
+            <span class="site-link-label">Analog Canvas</span>
+          </a>
+          <a class="presented-link" href="https://www.tokenzhang.com/" target="_blank" rel="noopener" aria-label="TokenZhang personal homepage / TokenZhang 个人主页" title="TokenZhang">
+            <span class="presented-label">Presented by</span><span class="presented-mark" aria-hidden="true">Z</span><span>TokenZhang</span>
+          </a>
+        </nav>
+        <div class="header-actions"><a
+            class="report-link"
+            href="https://github.com/Arcadia-1/virtuoso-bridge-lite/issues"
+            title="Report an issue / 反馈问题"
+            ><svg
+              width="15"
+              height="15"
+              viewBox="0 0 20 20"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.3"
+              aria-hidden="true"
+            >
+              <circle cx="10" cy="10" r="7.5" />
+              <path d="M10 5.5v5M10 13v1" /></svg
+            ><span class="en">Report issue</span
+            ><span class="zh">反馈问题</span></a
+          >
+          <a
+            class="nav-source"
+            href="https://github.com/Arcadia-1/virtuoso-bridge-lite"
+            aria-label="GitHub repository"
+            title="GitHub"
+            ><svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.87c-2.78.6-3.37-1.18-3.37-1.18-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.53 2.35 1.09 2.92.83.09-.65.35-1.09.64-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.6 9.6 0 0 1 12 6.82a9.6 9.6 0 0 1 2.5.34c1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.56 4.93.36.31.68.92.68 1.85v2.77c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"
+              /></svg
+          ></a>
+          <button
+            class="lang-switch js-only"
+            type="button"
+            data-language-toggle
+            aria-label="切换到中文"
+            title="切换到中文"
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="1.75" stroke-linecap="round"
+              stroke-linejoin="round" aria-hidden="true">
+              <path d="m5 8 6 6" />
+              <path d="m4 14 6-6 2-3" />
+              <path d="M2 5h12" />
+              <path d="M7 2h1" />
+              <path d="m22 22-5-10-5 10" />
+              <path d="M14 18h6" />
+            </svg>
+          </button></div>
+      </div>
+    </header><main id="main" class="refined"><div class="intro-stage"><section class="intro wrap" id="top">
+  <div class="intro-copy type-study">
+    <p class="intro-eyebrow"><span class="en">Infrastructure for agentic chip design</span><span class="zh">面向智能体的芯片设计基础设施</span></p>
+    <h1 class="hero-title"><span class="en"><span class="headline-line"><span class="headline-word">Your agent.</span></span> <span class="headline-line"><span class="headline-word">Inside Virtuoso.</span></span></span><span class="zh"><span class="headline-line"><span class="headline-word">让智能体，</span></span> <span class="headline-line"><span class="headline-word">走进 Virtuoso。</span></span></span></h1>
+    <div class="hero-summary">
+      <p><span class="en">Connect AI agents to real Cadence tools. <strong>Spectre simulation and PDK/CDF callbacks</strong> at the core, through Python, SKILL or the CLI.</span><span class="zh">连接 AI 智能体与真实的 Cadence 设计环境。以 <strong>Spectre 仿真与 PDK/CDF 回调</strong>为核心，通过 Python、SKILL 或命令行调用。</span></p>
+      <p><span class="en">Schematic, symbol and GDS operations for everyday work. Raw SKILL for the rest. <strong>Lite by default; advanced configuration is optional.</strong></span><span class="zh">原理图、symbol、GDS 操作覆盖日常需求，其他交给原生 SKILL。<strong>默认极简，高级配置按需开启。</strong></span></p>
     </div>
+    <div class="intro-actions"><a class="button primary" href="#start"><span class="en">Build your first connection</span><span class="zh">开始连接</span> ↗</a><a class="source-link" href="https://github.com/Arcadia-1/virtuoso-bridge-lite"><span class="en">Explore the source</span><span class="zh">查看开源代码</span> ↗</a></div>
+    <p class="intro-license">OPEN SOURCE <span>MIT LICENSE</span><span>PYTHON ≥ 3.9</span></p>
   </div>
+  <figure id="bridge-visual" class="hero-flow">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 775" role="img" aria-label="AI agent connects through Virtuoso Bridge to Virtuoso, Maestro and Spectre" aria-describedby="hero-flow-desc">
+  <desc id="hero-flow-desc">Architecture illustration, not a live session. The AI agent connects to Virtuoso Bridge, with SKILL and CLI interfaces at the bridge. Three paths lead to Spectre on the left, Virtuoso in the center and Maestro on the right. Tools run locally or remotely. Animated signals illustrate the connections; they do not display live execution.</desc>
+  <g class="system-guides" fill="none" stroke="#99a58c" stroke-width="9" stroke-linecap="butt" aria-hidden="true">
+    <path class="companion-output" pathLength="100" d="M248 140C248 196 300 210 300 282V610"/>
+    <path class="companion-output" pathLength="100" d="M313 140V610"/>
+  </g>
+  <g class="system-guides companion-white" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="butt" aria-hidden="true">
+    <path class="companion-output" pathLength="100" d="M248 140C248 196 300 210 300 282V610"/>
+    <path class="companion-output" pathLength="100" d="M313 140V610"/>
+  </g>
+  <g class="system-routes" fill="none" stroke="#53694a" stroke-width="8" stroke-linecap="round">
+    <path id="route-input" class="route-draw" data-geometry="input" pathLength="100" d="M330 140V320"/>
+    <path id="route-spectre" class="route-draw route-output" data-geometry="spectre" pathLength="100" d="M330 320C330 438 130 407 130 540"/>
+    <path id="route-virtuoso" class="route-draw route-output" data-geometry="virtuoso" pathLength="100" d="M330 320V610"/>
+    <path id="route-maestro" class="route-draw route-output" data-geometry="maestro" pathLength="100" d="M330 320C330 438 540 359 540 480"/>
+  </g>
+  <g fill="#f4f3ec" stroke="#b3542d" stroke-width="3">
+    <circle cx="330" cy="140" r="6"/>
+    <circle class="node-bridge" cx="330" cy="320" r="11" stroke-width="4"/>
+    <circle class="node-tool node-left" cx="130" cy="540" r="8"/>
+    <circle class="node-tool node-center" cx="330" cy="610" r="8"/>
+    <circle class="node-tool node-right" cx="540" cy="480" r="8"/>
+  </g>
+  <g font-family="Arial, Helvetica, sans-serif" fill="#30432b">
+    <g text-anchor="middle">
+      <text class="system-agent" x="330" y="113" font-size="43" font-weight="800" letter-spacing="-1.4">AI agent</text>
+    </g>
+    <text class="interface-label" x="365" y="363" font-size="18" font-weight="600" letter-spacing="1">SKILL / CLI</text>
+    <text x="365" y="278" font-size="28" font-weight="700" letter-spacing="2.6">VIRTUOSO</text>
+    <text x="362" y="332" font-size="61" font-weight="900" letter-spacing="-3">BRIDGE</text>
+    <g text-anchor="middle">
+      <text class="system-tool" x="130" y="600" font-size="41" font-weight="800" letter-spacing="-1.4">Spectre</text>
+      <text class="system-caption" x="130" y="628" font-size="15" letter-spacing=".2">NETLIST / PSF</text>
+      <text class="system-tool" x="330" y="670" font-size="41" font-weight="800" letter-spacing="-1.4">Virtuoso</text>
+      <text class="system-caption" x="330" y="698" font-size="15" letter-spacing=".2">SCHEMATIC / LAYOUT</text>
+      <text class="system-tool" x="540" y="540" font-size="41" font-weight="800" letter-spacing="-1.4">Maestro</text>
+      <text class="system-caption" x="540" y="568" font-size="15" letter-spacing=".2">SESSIONS / HISTORY</text>
+    </g>
+  </g>
+<text class="diagram-footer" x="330" y="735" font-size="14" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-weight="600">LOCAL / REMOTE</text>
+  <text class="diagram-footer" x="330" y="757" font-size="12" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-weight="600">ARCHITECTURE ILLUSTRATION / NOT A LIVE SESSION</text>
+</svg>
 
-  <div class="features">
-    <div class="feature">
-      <h3>Deep Virtuoso Integration</h3>
-      <p>Control across Schematic, Layout, Maestro, and Spectre. Flexible programming: execute inline SKILL, load .il files, or use Python APIs.</p>
-    </div>
-    <div class="feature">
-      <h3>Scalable Architecture</h3>
-      <p>Multi-server, multi-session. Built for modern distributed design clusters with parallel simulations across servers and accounts.</p>
-    </div>
-    <div class="feature">
-      <h3>AI-Native Design</h3>
-      <p>CLI-first, ships with pre-defined agent skills, and uses resilient, profile-aware SSH routing for frequent agent interactions.</p>
-    </div>
-  </div>
+  </figure>
+</section></div>
+<div class="content-band band-skillbridge"><div class="wrap"><section class="block" id="skillbridge">
+        <span class="section-no">01</span><h2><span class="en">How it differs from skillbridge</span><span class="zh">与 skillbridge 的区别</span></h2>
+        <p><span class="en">Both run SKILL through the same Virtuoso IPC core (<code>ipcBeginProcess</code> + <code>evalstring</code>). The difference is what sits on top.</span><span class="zh">两者底层相同，都通过 Virtuoso 的 IPC 机制（<code>ipcBeginProcess</code> + <code>evalstring</code>）执行 SKILL，区别在上层。</span></p>
+        <div class="dossier-book"><div class="dossier-titles"><div class="file-title primary-title"><h3 id="vb-heading">Virtuoso<br>Bridge</h3><img class="file-watermark" src="/assets/mark.svg?v=20261012-vb" alt="" aria-hidden="true"></div><div class="file-title secondary-title"><h3 id="sb-heading"><a href="https://github.com/unihd-cag/skillbridge">skillbridge <span aria-hidden="true">↗</span></a></h3></div></div><div class="dossier-pair"><article class="file-value primary-value" aria-labelledby="criterion-0-primary vb-heading"><h4 id="criterion-0-primary"><span class="en">Where Virtuoso runs</span><span class="zh">Virtuoso 在哪</span></h4><p><span class="en">This machine, or a remote server over SSH (jump hosts too)</span><span class="zh">本机，或通过 SSH 连接远程服务器（支持跳板机）</span></p></article><article class="file-value secondary-value" aria-labelledby="criterion-0-secondary sb-heading"><h4 id="criterion-0-secondary"><span class="en">Where Virtuoso runs</span><span class="zh">Virtuoso 在哪</span></h4><p><span class="en">Same machine only: Unix socket or localhost TCP</span><span class="zh">仅限本机：Unix socket 或 localhost TCP</span></p></article></div><div class="dossier-pair"><article class="file-value primary-value" aria-labelledby="criterion-1-primary vb-heading"><h4 id="criterion-1-primary"><span class="en">Schematic, layout, Maestro</span><span class="zh">原理图、版图、Maestro</span></h4><p><span class="en"><code>create()</code> / <code>modify()</code> editors, CDF parameters with callbacks, Maestro runs and results</span><span class="zh"><code>create()</code> / <code>modify()</code> 编辑接口、带回调的 CDF 参数设置、Maestro 运行与结果读取</span></p></article><article class="file-value secondary-value" aria-labelledby="criterion-1-secondary sb-heading"><h4 id="criterion-1-secondary"><span class="en">Schematic, layout, Maestro</span><span class="zh">原理图、版图、Maestro</span></h4><p><span class="en">Call the SKILL functions yourself</span><span class="zh">自己调用 SKILL 函数</span></p></article></div><div class="dossier-pair"><article class="file-value primary-value" aria-labelledby="criterion-2-primary vb-heading"><h4 id="criterion-2-primary">Spectre</h4><p><span class="en">Runs netlists locally or over SSH and parses PSF ASCII, no Virtuoso needed</span><span class="zh">本机或经 SSH 跑网表并解析 PSF ASCII，不需要 Virtuoso</span></p></article><article class="file-value secondary-value" aria-labelledby="criterion-2-secondary sb-heading"><h4 id="criterion-2-secondary">Spectre</h4><p><span class="en">Not included</span><span class="zh">不包含</span></p></article></div><div class="dossier-pair"><article class="file-value primary-value" aria-labelledby="criterion-3-primary vb-heading"><h4 id="criterion-3-primary"><span class="en">Safety</span><span class="zh">安全与超时</span></h4><p><span class="en">Token-signed requests, one at a time, 30 s default timeout; after a timeout it holds new work until replies are back in step, then resumes by itself, no restart</span><span class="zh">请求用令牌签名，一次只跑一个，默认 30 秒超时；超时后先暂停新请求，等回复重新对齐后自动恢复，无需重启</span></p></article><article class="file-value secondary-value" aria-labelledby="criterion-3-secondary sb-heading"><h4 id="criterion-3-secondary"><span class="en">Safety</span><span class="zh">安全与超时</span></h4><p><span class="en">No token (relies on local socket access); waits forever by default; after a timeout, replies can fall out of step until restart</span><span class="zh">无令牌（靠本机 socket 权限）；默认无限等待；超时后回复可能错位，需重启</span></p></article></div><div class="dossier-pair"><article class="file-value primary-value" aria-labelledby="criterion-4-primary vb-heading"><h4 id="criterion-4-primary"><span class="en">Built for</span><span class="zh">面向谁</span></h4><p><span class="en">AI agents: CLI, agent skills, <code>AGENTS.md</code></span><span class="zh">AI 智能体：命令行、智能体技能、<code>AGENTS.md</code></span></p></article><article class="file-value secondary-value" aria-labelledby="criterion-4-secondary sb-heading"><h4 id="criterion-4-secondary"><span class="en">Built for</span><span class="zh">面向谁</span></h4><p><span class="en">People in Python: Jupyter tab completion, IDE stubs</span><span class="zh">写 Python 的人：Jupyter 补全、IDE 类型存根</span></p></article></div><div class="dossier-pair"><article class="file-value primary-value" aria-labelledby="criterion-5-primary vb-heading"><h4 id="criterion-5-primary"><span class="en">Calling SKILL</span><span class="zh">调用方式</span></h4><p><span class="en">SKILL text: <code>execute_skill()</code>, <code>load_il()</code>, <code>virtuoso-bridge eval</code></span><span class="zh">SKILL 文本：<code>execute_skill()</code>、<code>load_il()</code>、<code>virtuoso-bridge eval</code></span></p></article><article class="file-value secondary-value" aria-labelledby="criterion-5-secondary sb-heading"><h4 id="criterion-5-secondary"><span class="en">Calling SKILL</span><span class="zh">调用方式</span></h4><p><span class="en">Python style: <code>ws.db.open_cell_view_by_type()</code>, objects mapped both ways</span><span class="zh">Python 风格：<code>ws.db.open_cell_view_by_type()</code>，对象双向映射</span></p></article></div><div class="dossier-pair"><article class="file-value primary-value" aria-labelledby="criterion-6-primary vb-heading"><h4 id="criterion-6-primary"><span class="en">License</span><span class="zh">许可证</span></h4><p>MIT</p></article><article class="file-value secondary-value" aria-labelledby="criterion-6-secondary sb-heading"><h4 id="criterion-6-secondary"><span class="en">License</span><span class="zh">许可证</span></h4><p>LGPL-3.0</p></article></div></div>
+        <p class="note"><span class="en">skillbridge details checked against its source and docs, version 1.8.0.</span><span class="zh">skillbridge 的信息对照其 1.8.0 版源码和文档核实。</span></p>
+      </section></div></div><div class="content-band band-start"><div class="wrap"><section class="block" id="start">
+        <span class="section-no">02</span><h2><span class="en">Quick start</span><span class="zh">快速开始</span></h2>
+        <div class="code">
+          <div class="code-head"><span class="platform-label"><svg class="platform-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 6 6 6-6 6M13 18h7"/></svg><span class="platform-name">macOS</span><span class="platform-separator"> · </span><span class="platform-name">Linux</span></span><button class="copy-button js-only" type="button" data-copy="quickstart-code"><span class="en">Copy</span><span class="zh">复制</span></button></div>
+          <pre id="quickstart-code"><code>git clone https://github.com/Arcadia-1/virtuoso-bridge-lite.git
+cd virtuoso-bridge-lite
+uv venv .venv &amp;&amp; source .venv/bin/activate
+uv pip install -e .
 
-  <!-- Comparison -->
-  <div class="section">
-    <h2>Comparison with skillbridge</h2>
-    <div class="comparison">
-      <table>
-        <tr><th>Feature</th><th>virtuoso-bridge-lite</th><th><a href="https://github.com/unihd-cag/skillbridge" style="color:var(--blue);text-decoration:none">skillbridge</a></th></tr>
-        <tr><td>Core mechanism</td><td><code>ipcBeginProcess</code> + <code>evalstring</code></td><td><code>ipcBeginProcess</code> + <code>evalstring</code></td></tr>
-        <tr><td>Local mode</td><td>Yes</td><td>Yes</td></tr>
-        <tr><td>Remote execution</td><td>SSH tunnel, jump host, auto-reconnect</td><td>Not supported</td></tr>
-        <tr><td>Calling style</td><td>String-based: <code>execute_skill("...")</code></td><td>Pythonic: <code>ws.db.open_cell_view_by_type(...)</code></td></tr>
-        <tr><td>Load .il files</td><td><code>client.load_il()</code></td><td>Not supported</td></tr>
-        <tr><td>Layout / schematic API</td><td><code>client.layout.create()</code> / <code>modify()</code> context managers</td><td>Raw SKILL only</td></tr>
-        <tr><td>Spectre simulation</td><td>Built-in runner + PSF parser</td><td>Not supported</td></tr>
-        <tr><td>AI agent support</td><td>Skill files, CLI-first, command logging</td><td>Not designed for agents</td></tr>
-        <tr><td>Python &harr; SKILL types</td><td>String-based</td><td>Auto bidirectional mapping</td></tr>
-        <tr><td>IDE tab completion</td><td>No (not needed by agents)</td><td>Yes (Jupyter, PyCharm stubs)</td></tr>
-      </table>
-    </div>
-    <p style="color:var(--muted);font-size:0.9rem;text-align:center;margin-top:8px">Both projects use the same Cadence SKILL IPC facility. The divergence is in what's built on top: skillbridge stays thin &mdash; a Pythonic RPC client. virtuoso-bridge-lite adds SSH remote access, high-level APIs, Spectre simulation, and an AI-agent-ready harness.</p>
-  </div>
-
-  <!-- Architecture -->
-  <div class="section">
-    <h2>Architecture</h2>
-    <p style="text-align:center;margin-bottom:16px"><img src="https://raw.githubusercontent.com/Arcadia-1/virtuoso-bridge-lite/main/assets/arch.png" alt="Architecture" style="max-width:100%;border-radius:8px;border:1px solid var(--border)"/></p>
-    <table>
-      <tr><th>Component</th><th>Description</th></tr>
-      <tr><td><code>VirtuosoClient</code></td><td>Pure TCP SKILL client. Sends SKILL as JSON, gets results. No SSH awareness.</td></tr>
-      <tr><td><code>SpectreSimulator</code></td><td>Runs standalone Spectre simulations locally or through SSH, then parses PSF ASCII results into Python data.</td></tr>
-      <tr><td><code>SSHClient</code></td><td>Role-aware transport: OpenSSH or Paramiko for commands and files, plus a standalone OpenSSH <code>-L</code> daemon tunnel. Optional &mdash; bypassed in local mode.</td></tr>
-    </table>
-    <p style="color:var(--muted);font-size:0.9rem;text-align:center;margin-top:12px">Fully decoupled: VirtuosoClient works with any TCP endpoint &mdash; SSH tunnel, VPN, direct LAN, or local. The GUI, deployment, daemon, and Spectre roles may share one host or resolve to separate hosts; legacy <code>VB_REMOTE_HOST</code> profiles remain compatible. See <a href="https://github.com/Arcadia-1/virtuoso-bridge-lite/blob/main/docs/adr/0001-explicit-remote-host-roles.md" style="color:var(--blue)">ADR 0001</a> for the host-role model.</p>
-  </div>
-
-  <!-- Getting Started -->
-  <div class="section" id="getting-started">
-    <h2>Getting Started</h2>
-
-    <h3>Prerequisites</h3>
-    <table>
-      <tr><td><strong>SSH</strong></td><td><code>ssh my-server</code> must work without a password prompt</td></tr>
-      <tr><td><strong>Virtuoso</strong></td><td>A running Virtuoso process on the remote (or local) machine</td></tr>
-      <tr><td><strong>Spectre</strong></td><td>(Simulation only) <code>spectre</code> on PATH, or set <code>VB_CADENCE_CSHRC</code></td></tr>
-    </table>
-    <div class="note"><strong>Note:</strong> Virtuoso and Spectre are independent &mdash; you can run Spectre without the SKILL bridge, and use the SKILL bridge without Spectre.</div>
-
-    <h3>Step-by-step setup</h3>
-    <pre><code><span class="cmt"># 1. Install</span>
-<span class="cmd">uv venv .venv</span>
-<span class="cmd">source .venv/bin/activate</span>
-<span class="cmd">uv pip install -e .</span>
-
-<span class="cmt"># 2. Generate config (fills host/user/jump + port in one shot)</span>
-<span class="cmd">virtuoso-bridge init user@host -J user@jump-host</span>
-<span class="cmt">#   or `virtuoso-bridge init` for an empty template to edit manually</span>
-
-<span class="cmt"># 3. (only if step 2 left anything blank) edit ~/.virtuoso-bridge/.env</span>
-<span class="cmt"># VB_REMOTE_HOST=my-server</span>
-<span class="cmt"># VB_REMOTE_USER=username</span>
-<span class="cmt"># VB_REMOTE_PORT=65081     # auto-assigned by hashing VB_REMOTE_USER</span>
-<span class="cmt"># VB_LOCAL_PORT=65082</span>
-<span class="cmt"># Split-host environments may also set:</span>
-<span class="cmt"># VB_GUI_HOST=gui-host             # Virtuoso CIW / X11</span>
-<span class="cmt"># VB_DEPLOY_HOST=gui-host          # setup and daemon files</span>
-<span class="cmt"># VB_DAEMON_HOST=compute-host      # RAMIC tunnel endpoint</span>
-<span class="cmt"># VB_SPECTRE_HOST=compute-host     # standalone simulations</span>
-<span class="cmt"># VB_REMOTE_SCRATCH_ROOT=/shared/home/user/.virtuoso-bridge</span>
-
-<span class="cmt"># 4. Start the bridge</span>
-<span class="cmd">virtuoso-bridge start</span>
-
-<span class="cmt"># 5. Load SKILL in Virtuoso CIW (path printed by `virtuoso-bridge start`)</span>
-<span class="cmt"># load("/tmp/virtuoso_bridge_&lt;remote_user&gt;/&lt;client_id&gt;/virtuoso_bridge/virtuoso_setup.il")</span>
-<span class="cmt"># Or bootstrap the first load safely by selecting an explicit CIW:</span>
-<span class="cmd">virtuoso-bridge list-windows --top-level --json</span>
-<span class="cmd">virtuoso-bridge bootstrap --window WINDOW_ID</span>
-
-<span class="cmt"># 6. Verify</span>
-<span class="cmd">virtuoso-bridge status</span></code></pre>
-
-    <pre><code><span class="cmt"># 7. Connect from Python</span>
-<span class="kw">from</span> virtuoso_bridge <span class="kw">import</span> VirtuosoClient
-
-client = VirtuosoClient.<span class="fn">from_env</span>()
-result = client.<span class="fn">execute_skill</span>(<span class="str">"1+2"</span>)
-<span class="fn">print</span>(result)  <span class="cmt"># VirtuosoResult(status=SUCCESS, output='3')</span></code></pre>
-
-    <pre><code><span class="cmt"># &mdash; or skip Python entirely: run SKILL straight from the shell &mdash;</span>
-
-<span class="cmt"># One-liner &mdash; full VirtuosoResult JSON on stdout</span>
-<span class="cmd">virtuoso-bridge eval</span> <span class="str">'getCurrentTime()'</span>
-
-<span class="cmt"># Multi-line SKILL via heredoc (auto-wrapped in progn; returns the last form)</span>
-<span class="cmd">virtuoso-bridge eval --stdin</span> &lt;&lt;<span class="str">'EOF'</span>
-<span class="kw">let</span>((libs)
-  libs = <span class="fn">mapcar</span>(<span class="kw">lambda</span>((l) l~&gt;name) <span class="fn">ddGetLibList</span>())
-  <span class="fn">printf</span>(<span class="str">"found %d libraries\n"</span> <span class="fn">length</span>(libs))
-  libs)
-<span class="str">EOF</span>
-
-<span class="cmt"># Whole .il file &mdash; uploaded automatically in SSH mode</span>
-<span class="cmd">virtuoso-bridge load</span> my_script.il</code></pre>
-
-    <h3>Jump host setup</h3>
-    <pre><code><span class="cmt"># In .env &mdash; VB_REMOTE_HOST is where Virtuoso runs, NOT the jump host</span>
-VB_REMOTE_HOST=compute-host
-VB_JUMP_HOST=jump-host</code></pre>
-    <p style="color:var(--muted);font-size:0.9rem">For command and file traffic, <code>VB_SSH_BACKEND=paramiko</code> reuses one authenticated SSH connection. Paramiko can also use an unauthenticated first-hop proxy such as <code>VB_SSH_PROXY=socks5://127.0.0.1:10800</code>. The daemon tunnel remains a standalone OpenSSH process so it can be monitored and restarted independently.</p>
-
-    <h3>Multi-profile setup</h3>
-    <pre><code><span class="cmt"># Default (no profile)</span>
-VB_REMOTE_HOST=server-a
-VB_REMOTE_USER=user1
-
-<span class="cmt"># Profile "worker1" &mdash; used with -p worker1</span>
-VB_REMOTE_HOST_worker1=server-b
-VB_REMOTE_USER_worker1=user2
-VB_SPECTRE_HOST_worker1=spectre-node-b</code></pre>
-    <pre><code><span class="cmd">virtuoso-bridge start -p worker1</span>
-<span class="cmd">virtuoso-bridge status -p worker1</span></code></pre>
-
-    <h3>Local mode (no SSH)</h3>
-    <pre><code><span class="kw">from</span> virtuoso_bridge <span class="kw">import</span> VirtuosoClient
-
-bridge = VirtuosoClient.<span class="fn">local</span>(port=65432)
-bridge.<span class="fn">execute_skill</span>(<span class="str">"1+2"</span>)</code></pre>
-    <p style="color:var(--muted);font-size:0.9rem">Set <code>VB_REMOTE_HOST=localhost</code> and run <code>virtuoso-bridge start</code> — it skips the SSH tunnel, deploys the bridge files locally, and prints the <code>load(...)</code> line for the CIW.</p>
-  </div>
-
-  <!-- API Reference -->
-  <div class="section">
-    <h2>API Reference</h2>
-
-    <div class="api-group">
-      <h3>VirtuosoClient &mdash; SKILL execution</h3>
-      <table>
-        <tr><th>Method</th><th>Description</th></tr>
-        <tr><td><code>execute_skill(code)</code></td><td>Run any SKILL expression, return result</td></tr>
-        <tr><td><code>load_il(path)</code></td><td>Upload &amp; load a .il file in Virtuoso</td></tr>
-        <tr><td><code>execute_operations(cmds)</code></td><td>Run a batch of SKILL commands</td></tr>
-        <tr><td><code>get_current_design()</code></td><td>Returns (lib, cell, view) of active cellview</td></tr>
-        <tr><td><code>open_window(lib, cell)</code></td><td>Open a cellview in Virtuoso GUI</td></tr>
-        <tr><td><code>save_current_cellview()</code></td><td>Save the active cellview</td></tr>
-        <tr><td><code>test_connection()</code></td><td>Ping the daemon to check connectivity</td></tr>
-      </table>
-    </div>
-
-    <div class="api-group">
-      <h3>Layout editing</h3>
-      <pre><code><span class="kw">from</span> virtuoso_bridge.virtuoso.layout <span class="kw">import</span> (
-    layout_create_rect <span class="kw">as</span> rect,
-    layout_create_path <span class="kw">as</span> path,
-    layout_create_param_inst <span class="kw">as</span> inst,
-    layout_create_via_by_name <span class="kw">as</span> via,
-)
-
-<span class="kw">with</span> client.layout.<span class="fn">create</span>(<span class="str">"myLib"</span>, <span class="str">"myCell"</span>) <span class="kw">as</span> lay:
-    lay.<span class="fn">add</span>(rect(<span class="str">"M1"</span>, <span class="str">"drawing"</span>, 0, 0, 1, 0.5))
-    lay.<span class="fn">add</span>(path(<span class="str">"M2"</span>, <span class="str">"drawing"</span>, [(0,0),(1,0)], 0.1))
-    lay.<span class="fn">add</span>(inst(<span class="str">"tsmcN28"</span>, <span class="str">"nch_ulvt_mac"</span>, <span class="str">"layout"</span>, <span class="str">"M0"</span>, 0, 0, <span class="str">"R0"</span>))
-    lay.<span class="fn">add</span>(via(<span class="str">"M1_M2"</span>, 0.5, 0.25))</code></pre>
-      <table>
-        <tr><th>Method</th><th>Description</th></tr>
-        <tr><td><code>lay.add(skill_cmd)</code></td><td>Queue a SKILL command (from ops functions)</td></tr>
-      </table>
-    </div>
-
-    <div class="api-group">
-      <h3>Schematic editing</h3>
-      <pre><code><span class="kw">from</span> virtuoso_bridge.virtuoso.schematic <span class="kw">import</span> (
-    schematic_create_inst_by_master_name <span class="kw">as</span> inst,
-    schematic_create_pin <span class="kw">as</span> pin,
-    schematic_label_instance_term <span class="kw">as</span> label,
-)
-
-<span class="kw">with</span> client.schematic.<span class="fn">create</span>(<span class="str">"myLib"</span>, <span class="str">"myCell"</span>) <span class="kw">as</span> sch:
-    sch.<span class="fn">add</span>(inst(<span class="str">"analogLib"</span>, <span class="str">"vdc"</span>, <span class="str">"symbol"</span>, <span class="str">"V0"</span>, 0, 0, <span class="str">"R0"</span>))
-    sch.<span class="fn">add</span>(label(<span class="str">"V0"</span>, <span class="str">"PLUS"</span>, <span class="str">"VDD"</span>))
-    sch.<span class="fn">add</span>(pin(<span class="str">"VDD"</span>, 0, 1.0, <span class="str">"R0"</span>, direction=<span class="str">"inputOutput"</span>))
-    sch.<span class="fn">add_net_label_to_transistor</span>(<span class="str">"M0"</span>,
-        drain_net=<span class="str">"OUT"</span>, gate_net=<span class="str">"IN"</span>,
-        source_net=<span class="str">"VSS"</span>, body_net=<span class="str">"VSS"</span>)</code></pre>
-      <table>
-        <tr><th>Method</th><th>Description</th></tr>
-        <tr><td><code>sch.add(skill_cmd)</code></td><td>Queue a SKILL command (from ops functions)</td></tr>
-        <tr><td><code>sch.add_net_label_to_transistor(...)</code></td><td>Label MOS D/G/S/B terminals</td></tr>
-      </table>
-      <p style="color:var(--muted);font-size:0.9rem">Use <code>create()</code> for a clean cell and <code>modify()</code> for append/update work. The optional Python-side planner produces deterministic coordinates and constraint reports before mutation; see <a href="https://github.com/Arcadia-1/virtuoso-bridge-lite/blob/main/docs/adr/0002-deterministic-schematic-planner.md" style="color:var(--blue)">ADR 0002</a>.</p>
-    </div>
-
-    <div class="api-group">
-      <h3>Spectre simulation</h3>
-      <pre><code><span class="kw">from</span> pathlib <span class="kw">import</span> Path
-<span class="kw">from</span> virtuoso_bridge.spectre <span class="kw">import</span> SpectreSimulator
-<span class="kw">from</span> virtuoso_bridge.spectre.psf <span class="kw">import</span> frequency_hz, read_psf_ascii, result_file, vector
-
-sim = SpectreSimulator.<span class="fn">from_env</span>(work_dir=<span class="str">"./output"</span>)
-result = sim.<span class="fn">run_simulation</span>(<span class="str">"tb_inv.scs"</span>, {})
-<span class="kw">if not</span> result.ok:
-    <span class="kw">raise</span> RuntimeError(result.errors)
-
-<span class="fn">print</span>(result.status)          <span class="cmt"># ExecutionStatus.SUCCESS</span>
-<span class="fn">print</span>(result.data.keys())     <span class="cmt"># ['time', 'VOUT', 'VIN', ...]</span>
-<span class="fn">print</span>(result.data[<span class="str">"VOUT"</span>][:5]) <span class="cmt"># first 5 voltage samples</span>
-
-<span class="cmt"># Strict accessors fail on ambiguous files, guessed keys, or malformed data.</span>
-raw = Path(result.metadata[<span class="str">"output_dir"</span>])
-ac = <span class="fn">read_psf_ascii</span>(<span class="fn">result_file</span>(raw, <span class="str">"ac.ac"</span>))
-freq = <span class="fn">frequency_hz</span>(ac)
-vout = <span class="fn">vector</span>(ac, <span class="str">"VOUT"</span>)</code></pre>
-    </div>
-
-    <div class="api-group">
-      <h3>ADE Maestro (Assembler)</h3>
-      <pre><code><span class="cmt"># Snapshot the focused maestro window — no session arg needed.
-# Returns dict with raw_sections (list of (skill_probe, raw_output)
-# tuples — no Python parsing of SKILL alists).</span>
-d = client.maestro.<span class="fn">snapshot</span>()
-<span class="cmt"># Or also write the full disk dump (raw + filtered XMLs +
-# state_from_skill.txt + per-point run files via tar). Files
-# pulled are governed by snapshot_filter.yaml — edit to add/drop.</span>
-d = client.maestro.<span class="fn">snapshot</span>(output_root=<span class="str">"output/"</span>)
-<span class="cmt"># Pin a specific history instead of the auto-pick (mtime-first).</span>
-d = client.maestro.<span class="fn">snapshot</span>(output_root=<span class="str">"output/"</span>, history=<span class="str">"Interactive.160"</span>)
-
-<span class="cmt"># Open / run / collect — GUI mode is required for run_and_wait</span>
-session = client.maestro.<span class="fn">open_gui_session</span>(<span class="str">"myLib"</span>, <span class="str">"myTB"</span>)
-history, status = client.maestro.<span class="fn">run_and_wait</span>(session=session, timeout=600)
-history = history.strip(<span class="str">'"'</span>)  <span class="cmt"># one budget covers run acceptance + completion</span>
-results = client.maestro.<span class="fn">read_results</span>(session, lib=<span class="str">"myLib"</span>, cell=<span class="str">"myTB"</span>, history=history)
-client.maestro.<span class="fn">export_waveform</span>(session, <span class="str">'dB20(mag(VF("/OUT")))'</span>, <span class="str">"gain.txt"</span>,
-    history=history, precision=12, width=20, number_notation=<span class="str">"none"</span>)
-client.maestro.<span class="fn">close_gui_session</span>(session, save=<span class="kw">False</span>)</code></pre>
-    </div>
-
-    <div class="api-group">
-      <h3>SSHClient &mdash; independent SSH layer</h3>
-      <pre><code><span class="kw">from</span> virtuoso_bridge <span class="kw">import</span> SSHClient, VirtuosoClient
-
-<span class="cmt"># Remote mode</span>
-tunnel = SSHClient.<span class="fn">from_env</span>()
-tunnel.<span class="fn">warm</span>()
-bridge = VirtuosoClient.<span class="fn">from_tunnel</span>(tunnel)
-
-<span class="cmt"># Local mode</span>
-bridge = VirtuosoClient.<span class="fn">local</span>(port=65432)</code></pre>
-    </div>
-
-    <div class="api-group">
-      <h3>File transfer and shell</h3>
-      <table>
-        <tr><th>Method</th><th>Description</th></tr>
-        <tr><td><code>upload_file(local, remote)</code></td><td>Upload a file to the remote machine</td></tr>
-        <tr><td><code>download_file(remote, local)</code></td><td>Download a file from the remote machine</td></tr>
-        <tr><td><code>run_shell_command(cmd)</code></td><td>Run a shell command on the remote host via SKILL csh()</td></tr>
-      </table>
-    </div>
-
-    <div class="api-group">
-      <h3>CLI commands</h3>
-      <table>
-        <tr><th>Command</th><th>Description</th></tr>
-        <tr><td><code>virtuoso-bridge init [user@host] [-J user@jump] [--force]</code></td><td>Write <code>~/.virtuoso-bridge/.env</code>; arguments fill host/user/jump, <code>--force</code> overwrites an existing file</td></tr>
-        <tr><td><code>virtuoso-bridge start [-p PROFILE] [--bind-venv]</code></td><td>Start SSH tunnel + deploy daemon.  With <code>-p PROFILE --bind-venv</code> also binds the active virtualenv to that profile, so subsequent naked <code>from_env()</code> calls in the same venv resolve to it.</td></tr>
-        <tr><td><code>virtuoso-bridge status</code></td><td>Check tunnel, daemon identity/hostname, and Spectre executable availability</td></tr>
-        <tr><td><code>virtuoso-bridge restart</code></td><td>Restart SSH tunnel and refresh the deployed daemon setup</td></tr>
-        <tr><td><code>virtuoso-bridge stop</code></td><td>Stop tunnel</td></tr>
-        <tr><td><code>virtuoso-bridge profile show</code> <span style="display:inline-block;padding:1px 6px;margin-left:4px;background:var(--blue);color:#fff;font-size:0.7rem;border-radius:3px;font-weight:600;letter-spacing:0.5px">NEW</span></td><td>Print the resolved profile (and where it came from: explicit / env / runtime <code>--env</code> file / venv binding / user <code>~/.virtuoso-bridge/.env</code> / default), plus the venv binding path.</td></tr>
-        <tr><td><code>virtuoso-bridge profile bind PROFILE --venv</code> <span style="display:inline-block;padding:1px 6px;margin-left:4px;background:var(--blue);color:#fff;font-size:0.7rem;border-radius:3px;font-weight:600;letter-spacing:0.5px">NEW</span></td><td>Pin the active virtualenv to <code>PROFILE</code> by writing <code>$VIRTUAL_ENV/.virtuoso-bridge-profile</code>.  Naked <code>VirtuosoClient.from_env()</code> / <code>SpectreSimulator.from_env()</code> calls in that venv then resolve to this profile.  Explicit <code>profile=</code> and CLI <code>-p</code> still take precedence.</td></tr>
-        <tr><td><code>virtuoso-bridge profile clear --venv</code> <span style="display:inline-block;padding:1px 6px;margin-left:4px;background:var(--blue);color:#fff;font-size:0.7rem;border-radius:3px;font-weight:600;letter-spacing:0.5px">NEW</span></td><td>Remove the active virtualenv's profile binding.</td></tr>
-        <tr><td><code>virtuoso-bridge windows</code></td><td>List Virtuoso windows + focused session</td></tr>
-        <tr><td><code>virtuoso-bridge snapshot</code></td><td>Dump focused maestro's SKILL probe sections to stdout</td></tr>
-        <tr><td><code>virtuoso-bridge snapshot -o ROOT [--history NAME]</code></td><td>Full disk dump of the focused session to <code>ROOT/&lt;ts&gt;__&lt;lib&gt;__&lt;cell&gt;/</code>: raw + filtered setup XMLs, <code>state_from_skill.txt</code>, latest-run per-point files. <code>--history</code> pins a specific maestro history (e.g. <code>Interactive.160</code>); otherwise auto-picks by mtime. File whitelist lives in <code>virtuoso/maestro/snapshot_filter.yaml</code> — edit to reshape the dump (no code change).</td></tr>
-        <tr><td><code>virtuoso-bridge screenshot [TARGET] [-o PATH]</code></td><td>Capture the CIW (default), current window, a view name, or an explicit window number; defaults to the user artifact screenshots directory.</td></tr>
-        <tr><td><code>virtuoso-bridge load FILE.il</code> <span style="display:inline-block;padding:1px 6px;margin-left:4px;background:var(--blue);color:#fff;font-size:0.7rem;border-radius:3px;font-weight:600;letter-spacing:0.5px">NEW</span></td><td>Run a <code>.il</code> file in the live Virtuoso session — uploads the file in SSH mode and emits the full <code>VirtuosoResult</code> as JSON on stdout. Errors keep the original file/line (no temp-wrapper noise), so it pairs cleanly with VS Code <code>tasks.json</code> for one-keystroke SKILL iteration.</td></tr>
-        <tr><td><code>virtuoso-bridge eval 'EXPR'</code> &nbsp;/&nbsp; <code>eval --stdin</code> <span style="display:inline-block;padding:1px 6px;margin-left:4px;background:var(--blue);color:#fff;font-size:0.7rem;border-radius:3px;font-weight:600;letter-spacing:0.5px">NEW</span></td><td>One-liner / heredoc companion to <code>load</code>. Multi-statement input is auto-wrapped in <code>progn(...)</code>; <code>--stdin</code> sidesteps shell quoting for snippets with embedded quotes/parens.</td></tr>
-        <tr><td><code>virtuoso-bridge dismiss-dialog</code></td><td>X11 rescue path — finds known blocking Virtuoso GUI dialogs and dismisses them <em>outside the SKILL channel</em>.</td></tr>
-        <tr><td><code>virtuoso-bridge list-windows --top-level --json</code></td><td>Deduplicated X11 top-level Virtuoso frames, suitable for explicit CIW selection. Omit <code>--top-level</code> for the full child-window diagnostic view.</td></tr>
-        <tr><td><code>virtuoso-bridge bootstrap --window WINDOW_ID</code></td><td>Safely type and submit the generated first-load command into an explicitly selected CIW; rejects non-CIW windows and verifies daemon identity afterward.</td></tr>
-        <tr><td><code>virtuoso-bridge dismiss-window WINDOW_ID --action enter</code></td><td>Explicit X11 recovery path for a window ID returned by <code>list-windows</code>.</td></tr>
-        <tr><td><code>virtuoso-bridge license</code></td><td>Check Spectre license availability on the remote.</td></tr>
-        <tr><td><code>virtuoso-bridge export-visio LIB CELL -o OUT.vsdx</code></td><td>Windows + pywin32 path: render a Virtuoso schematic into Microsoft Visio. Defaults skip the MOS body pin <code>B</code>; <code>--include-body-pins</code> keeps it, <code>--exclude-net</code>/<code>--exclude-pin</code> repeatable for finer filtering.</td></tr>
-        <tr><td><code>virtuoso-bridge skill-find &lt;query&gt;</code> <span style="display:inline-block;padding:1px 6px;margin-left:4px;background:var(--blue);color:#fff;font-size:0.7rem;border-radius:3px;font-weight:600;letter-spacing:0.5px">NEW</span></td><td>Search SKILL functions by name (fuzzy / prefix / suffix / exact / regex). Returns matching function names from the Virtuoso SKILL index.</td></tr>
-        <tr><td><code>virtuoso-bridge doc-search &lt;query&gt;</code></td><td>Search installed Cadence HTML/text documentation and topic maps. Use <code>--doc-root</code> for explicit local/offline roots, or omit it to search through the active bridge profile.</td></tr>
-        <tr><td><code>virtuoso-bridge skill-info &lt;fn&gt;</code> <span style="display:inline-block;padding:1px 6px;margin-left:4px;background:var(--blue);color:#fff;font-size:0.7rem;border-radius:3px;font-weight:600;letter-spacing:0.5px">NEW</span></td><td>Get detailed More Info documentation for a specific SKILL function — syntax, description, arguments, and return value.</td></tr>
-      </table>
-    </div>
-
-    <div class="api-group">
-      <h3>What <code>snapshot -o</code> pulls</h3>
-      <p>One command dumps the focused maestro session's setup <em>and</em> the latest run's per-point files to a timestamped folder:</p>
-      <pre><code><span class="cmt"># auto-pick newest history</span>
-<span class="cmd">virtuoso-bridge snapshot -o output</span>
-
-<span class="cmt"># or pin a specific history (e.g. side-by-side comparison of two runs)</span>
-<span class="cmd">virtuoso-bridge snapshot -o output --history Interactive.160</span></code></pre>
-      <p>Layout of the output directory:</p>
-      <pre><code>output/&lt;YYYYMMDD_HHMMSS&gt;__&lt;lib&gt;__&lt;cell&gt;/
-├── maestro.sdb, active.state                    <span class="cmt"># raw Cadence files</span>
-├── state_from_sdb.xml                           <span class="cmt"># sdb filtered (~10× smaller)</span>
-├── state_from_active_state.xml                  <span class="cmt"># active.state filtered</span>
-├── state_from_skill.txt                         <span class="cmt"># SKILL-probe setup summary</span>
-└── &lt;history&gt;/
-    ├── &lt;history&gt;.{log,rdb,msg.db}               <span class="cmt"># run-level (rdb/msg.db are SQLite)</span>
-    └── &lt;pt&gt;/&lt;tb&gt;/
-        ├── netlist/  → netlist, input.scs, qpInformation.ils, exprOutputs.json, paramInfo.ils
-        └── psf/      → spectre.out, logFile, dcOp.dc, *.ac, *.tran, *.noise, ...</code></pre>
-      <p>Per-point <code>netlist/</code> keeps the 5 files that describe the runnable testbench and outputs (main SPICE netlist, testbench top-level, SKILL and JSON output-expression definitions, corner label). <code>psf/</code> keeps stdout + logs + non-binary analysis results.</p>
-      <p>File selection is governed by <a href="https://github.com/Arcadia-1/virtuoso-bridge-lite/blob/main/src/virtuoso_bridge/virtuoso/maestro/snapshot_filter.yaml"><code>virtuoso/maestro/snapshot_filter.yaml</code></a> — every entry carries a per-file tag (<code>[KEEP]</code>, <code>[REDUNDANT]</code>, <code>[SCAFFOLDING]</code>, <code>[METADATA]</code>, <code>[DEBUG-ONLY]</code>, <code>[GUI-CONFIG]</code>, <code>[RARELY]</code>, <code>[NEVER]</code>). Uncomment a line to add a file, comment it to skip. No package reinstall needed; the YAML is reread on every snapshot call.</p>
-      <p>Deliberately not pulled, regardless of YAML: <code>*.raw</code> binary waveforms, <code>wavedb/</code>, and PDK info dumps (<code>modelParameter.info</code>, <code>primitives.info.*</code>). Read scalar output tables with <code>client.maestro.read_results()</code> and export waveform text with <code>client.maestro.export_waveform()</code> instead of copying the binaries.</p>
-    </div>
-  </div>
-
-  <!-- Examples -->
-  <div class="section">
-    <h2>Examples</h2>
-    <table>
-      <tr><th>Category</th><th>Example</th><th>Description</th></tr>
-      <tr><td rowspan="10">Basic</td><td><code>00_ciw_output_vs_return.py</code></td><td>Compare CIW print vs SKILL return value</td></tr>
-      <tr><td><code>01_execute_skill.py</code></td><td>Run SKILL expressions (Hello World)</td></tr>
-      <tr><td><code>02_ciw_print.py</code></td><td>Print to Virtuoso CIW</td></tr>
-      <tr><td><code>03_load_il.py</code></td><td>Load .il file into Virtuoso</td></tr>
-      <tr><td><code>04_list_library_cells.py</code></td><td>Enumerate libraries and cells</td></tr>
-      <tr><td><code>05_harvest_library.py</code></td><td>Harvest library metadata into structured output</td></tr>
-      <tr><td><code>05_multiline_skill.py</code></td><td>Execute multi-line SKILL code</td></tr>
-      <tr><td><code>06_screenshot.py</code></td><td>Capture window screenshot and download</td></tr>
-      <tr><td><code>07_sanitize_on_download.py</code></td><td>Download remote file with path sanitization</td></tr>
-      <tr><td><code>08_library_management.py</code></td><td>Create and inspect libraries, categories, and cells</td></tr>
-      <tr><td rowspan="15">Layout</td><td><code>01_create_layout.py</code></td><td>Create layout with NMOS/PMOS/CFMOM instances</td></tr>
-      <tr><td><code>02_add_polygon.py</code></td><td>Add polygon shapes</td></tr>
-      <tr><td><code>03_add_via.py</code></td><td>Place vias</td></tr>
-      <tr><td><code>04_multilayer_routing.py</code></td><td>M2-M7 multi-layer routing</td></tr>
-      <tr><td><code>05_bus_routing.py</code></td><td>8-bit bus wiring</td></tr>
-      <tr><td><code>06_read_layout.py</code></td><td>Read back layout geometry</td></tr>
-      <tr><td><code>07_delete_shapes_on_layer.py</code></td><td>Delete shapes on a specific layer</td></tr>
-      <tr><td><code>08_clear_routing.py</code></td><td>Clear routing from a layout</td></tr>
-      <tr><td><code>09_clear_current_layout.py</code></td><td>Clear the current layout entirely</td></tr>
-      <tr><td><code>10_delete_cell.py</code></td><td>Delete a layout cell</td></tr>
-      <tr><td><code>11_read_summary.py</code></td><td>Read layout summary</td></tr>
-      <tr><td><code>12_layer_visibility.py</code></td><td>Toggle layer visibility</td></tr>
-      <tr><td><code>13_select_and_delete.py</code></td><td>Select shapes and delete</td></tr>
-      <tr><td><code>14_mosaic_and_nets.py</code></td><td>Mosaic instances and net assignment</td></tr>
-      <tr><td><code>15_export_gds.py</code></td><td>Export a layout to GDS with fast-failure log polling</td></tr>
-      <tr><td rowspan="13">Schematic</td><td><code>01a_create_rc_stepwise.py</code></td><td>Create RC circuit step by step</td></tr>
-      <tr><td><code>01b_create_rc_load_skill.py</code></td><td>Create RC via .il script injection</td></tr>
-      <tr><td><code>02_read_connectivity.py</code></td><td>Read nets, pins, instances</td></tr>
-      <tr><td><code>03_read_instance_params.py</code></td><td>Read instance parameters</td></tr>
-      <tr><td><code>04_test_set_instance_params_analoglib.py</code></td><td>Set instance parameters (analogLib)</td></tr>
-      <tr><td><code>05_rename_instance.py</code></td><td>Rename an instance</td></tr>
-      <tr><td><code>06_delete_instance.py</code></td><td>Delete an instance</td></tr>
-      <tr><td><code>07_delete_cell.py</code></td><td>Delete a schematic cell</td></tr>
-      <tr><td><code>08_import_cdl_cap_array.py</code></td><td>Import CDL netlist via spiceIn</td></tr>
-      <tr><td><code>09_create_pins.py</code></td><td>Create schematic pins</td></tr>
-      <tr><td><code>10_create_wire.py</code></td><td>Create wires between pins</td></tr>
-      <tr><td><code>11_read_schematic_unified.py</code></td><td>Unified schematic read (instances + nets + pins)</td></tr>
-      <tr><td><code>12_plan_differential_pair.py</code></td><td>Plan a deterministic differential-pair schematic without mutating Virtuoso</td></tr>
-      <tr><td rowspan="3">Symbol</td><td><code>01_rc_create_with_symbol.py</code></td><td>Create RC circuit with auto-generated symbol</td></tr>
-      <tr><td><code>02_bus10_create_with_symbol.py</code></td><td>Create 10-bit bus with symbol</td></tr>
-      <tr><td><code>03_manual_symbol_semantics.py</code></td><td>Create a manual symbol with explicit semantic pin mapping</td></tr>
-      <tr><td rowspan="10">Maestro</td><td><code>01_read_focused_maestro.py</code></td><td>snapshot() of focused maestro (in-memory, JSON to stdout)</td></tr>
-      <tr><td><code>02_snapshot_with_metrics.py</code></td><td>Full disk dump (snapshot -o ROOT) of focused maestro</td></tr>
-      <tr><td><code>03_bg_open_read_close_maestro.py</code></td><td>Background open/close + read (no GUI window)</td></tr>
-      <tr><td><code>04_gui_open_snapshot_close.py</code></td><td>GUI open → snapshot → close (owns lifecycle)</td></tr>
-      <tr><td><code>05_gui_session_lifecycle.py</code></td><td>open_gui_session / close_gui_session lifecycle test</td></tr>
-      <tr><td><code>06a_rc_create.py</code></td><td>Create Maestro test for RC filter (auto-timestamped cell)</td></tr>
-      <tr><td><code>06b_rc_simulate_and_read.py</code></td><td>Run simulation in GUI mode, read the exact history, export waveforms</td></tr>
-      <tr><td><code>07_ensure_maestro_view.py</code></td><td>Ensure a maestro view exists before operating</td></tr>
-      <tr><td><code>08_set_simulator_mode.py</code></td><td>Set simulator mode (APS/AXS/spectre)</td></tr>
-      <tr><td><code>09_export_sweep_subpoints.py</code></td><td>Export parametric sweep sub-point results</td></tr>
-      <tr><td rowspan="6">Spectre</td><td><code>01_inverter_tran.py</code></td><td>CMOS inverter transient simulation</td></tr>
-      <tr><td><code>01_veriloga_adc_dac.py</code></td><td>4-bit ADC/DAC with Verilog-A</td></tr>
-      <tr><td><code>02_cap_dc_ac.py</code></td><td>RC filter DC+AC frequency response</td></tr>
-      <tr><td><code>03_check_license.py</code></td><td>Check Spectre license availability</td></tr>
-      <tr><td><code>04_strongarm_pss_pnoise.py</code></td><td>StrongArm comparator PSS+Pnoise</td></tr>
-      <tr><td><code>05_parallel_sweep.py</code></td><td>Parallel parameter sweep across servers</td></tr>
-    </table>
-  </div>
-
-  <!-- Citation -->
-  <div class="section">
-    <h2>Citation</h2>
-    <div class="citation">@article{zhang2025virtuosobridge,
-  title   = {Virtuoso-Bridge: An Agent-Native Bridge for Remote
-             Analog and Mixed-Signal Design Automation},
-  author  = {Zhang, Zhishuai and Li, Xintian
-             and Sun, Nan and Jie, Lu},
+virtuoso-bridge init user@host   <span class="comment"># write ~/.virtuoso-bridge/.env</span>
+virtuoso-bridge start            <span class="comment"># SSH tunnel + daemon files</span>
+virtuoso-bridge status           <span class="comment"># prints the load("...") line for your CIW</span>
+virtuoso-bridge eval '1+2'       <span class="comment"># after loading it: 3</span></code></pre>
+        </div>
+        <p class="note">
+          <span class="en">Paste the <code>load("...")</code> line into the Virtuoso CIW you want to drive. Windows, local mode and standalone Spectre: see the <a href="/guide/#install" data-internal>guide</a>.</span><span class="zh">把 <code>load("...")</code> 这行粘贴到要控制的 Virtuoso CIW。Windows、本机模式、独立 Spectre 见<a href="/guide/#install" data-internal>使用文档</a>。</span>
+        </p>
+      </section></div></div><div class="content-band band-docs"><div class="wrap"><section class="block" id="docs">
+        <span class="section-no">03</span><h2><span class="en">Read more</span><span class="zh">延伸阅读</span></h2>
+        <ul class="links">
+          <li><a href="/guide/" data-internal><span class="en">Guide</span><span class="zh">使用文档</span></a><span><span class="en">setup, configuration, CLI, architecture</span><span class="zh">安装、配置、命令行、架构</span></span></li>
+          <li><a href="https://github.com/Arcadia-1/virtuoso-bridge-lite/tree/main/examples">Example</a><span><span class="en">runnable workflows</span><span class="zh">可运行的工作流</span></span></li>
+          <li><a href="https://github.com/Arcadia-1/virtuoso-bridge-lite/blob/main/AGENTS.md">AGENTS.md</a><span><span class="en">start here for coding agents, then link <code>skills/</code></span><span class="zh">编程智能体从这里读起，再链接 <code>skills/</code></span></span></li>
+          <li><a href="https://github.com/Arcadia-1/virtuoso-bridge-lite/issues"><span class="en">Issues</span><span class="zh">问题反馈</span></a><span><span class="en">bugs and requests</span><span class="zh">缺陷与需求</span></span></li>
+          <li><a href="#cite"><span class="en">Citation</span><span class="zh">引用</span></a><span>BibTeX</span></li>
+          <li><a href="#ecosystem"><span class="en">Ecosystem</span><span class="zh">生态</span></a><span><span class="en">projects built on Virtuoso Bridge</span><span class="zh">基于 Virtuoso Bridge 的项目</span></span></li>
+        </ul>
+      </section></div></div><section class="ecosystem-area wrap" id="ecosystem"><div class="ecosystem-heading"><span class="section-no">04</span><h2><span class="en">Ecosystem</span><span class="zh">生态</span></h2><p><span class="en">Click a card to explore the project on GitHub.</span><span class="zh">点击卡片，在 GitHub 上了解项目。</span></p></div><section class="archive" data-waterfall aria-label="Project archive / 项目档案">
+<div class="collection-bar"><span class="wf-total"><span class="en">53 PROJECTS / 5 COLLECTIONS</span><span class="zh">53 个项目 / 5 个分类</span></span><button type="button" hidden class="wf-motion" data-wf-motion aria-controls="wf-panorama" aria-label="Pause project scrolling"><svg viewBox="0 0 16 16" aria-hidden="true"><path class="wf-pause-icon" d="M5 3v10M11 3v10"/><path class="wf-play-icon" d="m5 3 8 5-8 5Z"/></svg><span>Pause</span></button></div>
+<nav id="categories" aria-label="Project collections / 项目分类"><a href="#eco-forks" id="collection-0"><span class="en">Rewrites, copies and forks</span><span class="zh">重写、副本与 fork</span><small>14</small></a><a href="#eco-tools" id="collection-1"><span class="en">Tools built on it</span><span class="zh">基于它的工具</span><small>11</small></a><a href="#eco-agents" id="collection-2"><span class="en">Agents and design projects</span><span class="zh">智能体与设计项目</span><small>14</small></a><a href="#eco-skills" id="collection-3"><span class="en">Skills and knowledge</span><span class="zh">技能与知识库</span><small>4</small></a><a href="#eco-mentions" id="collection-4"><span class="en">Mentions and lists</span><span class="zh">提及与收录</span><small>10</small></a></nav><div class="wf-browser"><button hidden class="wf-step" type="button" data-wf-step="-1" aria-controls="wf-panorama" aria-label="Previous collection"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12 4-6 6 6 6"/></svg></button><button hidden class="wf-step" type="button" data-wf-step="1" aria-controls="wf-panorama" aria-label="Next collection"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m8 4 6 6-6 6"/></svg></button><div class="wf-shelf"><div class="wf-panorama" id="wf-panorama"><div class="wf-column" id="eco-forks" data-group="0" role="group" aria-labelledby="collection-0"><div class="wf-window"><div class="wf-track"><div class="wf-copy" data-original><a class="wf-record" href="https://github.com/deanyou/virtuoso-cli" target="_blank" rel="noopener noreferrer" data-item="0" aria-label="deanyou/virtuoso-cli — GitHub" style="--card-height:180px"><span class="wf-card wf-registry"><span class="wf-meta"><span class="wf-kind"><span class="en">REGISTRY</span><span class="zh">项目档案</span></span><span>01.01</span></span><span class="wf-title">deanyou</span><span class="wf-owner">virtuoso-cli</span><span class="wf-description"><span class="en">Rust rewrite (vcli), multi-session</span><span class="zh">Rust 重写（vcli），多会话</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/kos2001/mock-virtuoso" target="_blank" rel="noopener noreferrer" data-item="1" aria-label="kos2001/mock-virtuoso — GitHub" style="--card-height:207px"><span class="wf-card wf-registry"><span class="wf-meta"><span class="wf-kind"><span class="en">REGISTRY</span><span class="zh">项目档案</span></span><span>01.02</span></span><span class="wf-title">kos2001</span><span class="wf-owner">mock-virtuoso</span><span class="wf-description"><span class="en">Test double, no Cadence needed</span><span class="zh">测试替身，无需 Cadence</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/sunsun1949/virtuoso-bridge-lite" target="_blank" rel="noopener noreferrer" data-item="2" aria-label="sunsun1949/virtuoso-bridge-lite — GitHub" style="--card-height:190px"><span class="wf-card wf-registry"><span class="wf-meta"><span class="wf-kind"><span class="en">REGISTRY</span><span class="zh">项目档案</span></span><span>01.03</span></span><span class="wf-title">sunsun1949</span><span class="wf-owner">virtuoso-bridge-lite</span><span class="wf-description"><span class="en">Copy with web GUI and desktop app</span><span class="zh">副本，加网页界面与桌面版</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/DavidQyz/virtuoso-bridge" target="_blank" rel="noopener noreferrer" data-item="3" aria-label="DavidQyz/virtuoso-bridge — GitHub" style="--card-height:218px"><span class="wf-card wf-registry"><span class="wf-meta"><span class="wf-kind"><span class="en">REGISTRY</span><span class="zh">项目档案</span></span><span>01.04</span></span><span class="wf-title">DavidQyz</span><span class="wf-owner">virtuoso-bridge</span><span class="wf-description"><span class="en">Snapshot with an OTA example</span><span class="zh">源码快照，附 OTA 示例</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/Ajith-82/virtuoso-bridge-lite" target="_blank" rel="noopener noreferrer" data-item="4" aria-label="Ajith-82/virtuoso-bridge-lite — GitHub" style="--card-height:180px"><span class="wf-card wf-registry"><span class="wf-meta"><span class="wf-kind"><span class="en">REGISTRY</span><span class="zh">项目档案</span></span><span>01.05</span></span><span class="wf-title">Ajith-82</span><span class="wf-owner">virtuoso-bridge-lite</span><span class="wf-description"><span class="en">Fork: constraints, Layout XL</span><span class="zh">fork：约束与 Layout XL</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/GentLau/virtuoso-bridge-NCS" target="_blank" rel="noopener noreferrer" data-item="5" aria-label="GentLau/virtuoso-bridge-NCS — GitHub" style="--card-height:207px"><span class="wf-card wf-registry"><span class="wf-meta"><span class="wf-kind"><span class="en">REGISTRY</span><span class="zh">项目档案</span></span><span>01.06</span></span><span class="wf-title">GentLau</span><span class="wf-owner">virtuoso-bridge-NCS</span><span class="wf-description"><span class="en">Fork: multi-user design</span><span class="zh">fork：多用户设计</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/Olderdriver/virtuoso-bridge-lite" target="_blank" rel="noopener noreferrer" data-item="6" aria-label="Olderdriver/virtuoso-bridge-lite — GitHub" style="--card-height:190px"><span class="wf-card wf-registry"><span class="wf-meta"><span class="wf-kind"><span class="en">REGISTRY</span><span class="zh">项目档案</span></span><span>01.07</span></span><span class="wf-title">Olderdriver</span><span class="wf-owner">virtuoso-bridge-lite</span><span class="wf-description"><span class="en">Fork: daemon selection</span><span class="zh">fork：daemon 选择</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/cortalo/virtuoso-bridge-lite" target="_blank" rel="noopener noreferrer" data-item="7" aria-label="cortalo/virtuoso-bridge-lite — GitHub" style="--card-height:218px"><span class="wf-card wf-registry"><span class="wf-meta"><span class="wf-kind"><span class="en">REGISTRY</span><span class="zh">项目档案</span></span><span>01.08</span></span><span class="wf-title">cortalo</span><span class="wf-owner">virtuoso-bridge-lite</span><span class="wf-description"><span class="en">Fork: waveform export option</span><span class="zh">fork：波形导出参数</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/why250/virtuoso-bridge-lite" target="_blank" rel="noopener noreferrer" data-item="8" aria-label="why250/virtuoso-bridge-lite — GitHub" style="--card-height:180px"><span class="wf-card wf-registry"><span class="wf-meta"><span class="wf-kind"><span class="en">REGISTRY</span><span class="zh">项目档案</span></span><span>01.09</span></span><span class="wf-title">why250</span><span class="wf-owner">virtuoso-bridge-lite</span><span class="wf-description"><span class="en">Fork: file transfer docs</span><span class="zh">fork：文件传输文档</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/Pyrojewel-zard/virtuoso-bridge-lite" target="_blank" rel="noopener noreferrer" data-item="9" aria-label="Pyrojewel-zard/virtuoso-bridge-lite — GitHub" style="--card-height:207px"><span class="wf-card wf-registry"><span class="wf-meta"><span class="wf-kind"><span class="en">REGISTRY</span><span class="zh">项目档案</span></span><span>01.10</span></span><span class="wf-title">Pyrojewel-zard</span><span class="wf-owner">virtuoso-bridge-lite</span><span class="wf-description"><span class="en">Fork: ADE notes, clean-up</span><span class="zh">fork：ADE 文档与整理</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/muziyangyu/virtuoso-bridge-lite" target="_blank" rel="noopener noreferrer" data-item="10" aria-label="muziyangyu/virtuoso-bridge-lite — GitHub" style="--card-height:190px"><span class="wf-card wf-registry"><span class="wf-meta"><span class="wf-kind"><span class="en">REGISTRY</span><span class="zh">项目档案</span></span><span>01.11</span></span><span class="wf-title">muziyangyu</span><span class="wf-owner">virtuoso-bridge-lite</span><span class="wf-description"><span class="en">Fork: documentation changes</span><span class="zh">fork：文档调整</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/Jureka-Shiyi/virtuoso-bridge-lite" target="_blank" rel="noopener noreferrer" data-item="11" aria-label="Jureka-Shiyi/virtuoso-bridge-lite — GitHub" style="--card-height:218px"><span class="wf-card wf-registry"><span class="wf-meta"><span class="wf-kind"><span class="en">REGISTRY</span><span class="zh">项目档案</span></span><span>01.12</span></span><span class="wf-title">Jureka-Shiyi</span><span class="wf-owner">virtuoso-bridge-lite</span><span class="wf-description"><span class="en">Fork: personal changes</span><span class="zh">fork：个人改动</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/hayatushitaro-lab/virtuoso-bridge-lite" target="_blank" rel="noopener noreferrer" data-item="12" aria-label="hayatushitaro-lab/virtuoso-bridge-lite — GitHub" style="--card-height:180px"><span class="wf-card wf-registry"><span class="wf-meta"><span class="wf-kind"><span class="en">REGISTRY</span><span class="zh">项目档案</span></span><span>01.13</span></span><span class="wf-title">hayatushitaro-lab</span><span class="wf-owner">virtuoso-bridge-lite</span><span class="wf-description"><span class="en">Fork: tooling update</span><span class="zh">fork：工具链更新</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/defineiocc02/virtuoso-bridge-lite" target="_blank" rel="noopener noreferrer" data-item="13" aria-label="defineiocc02/virtuoso-bridge-lite — GitHub" style="--card-height:207px"><span class="wf-card wf-registry"><span class="wf-meta"><span class="wf-kind"><span class="en">REGISTRY</span><span class="zh">项目档案</span></span><span>01.14</span></span><span class="wf-title">defineiocc02</span><span class="wf-owner">virtuoso-bridge-lite</span><span class="wf-description"><span class="en">Fork: documents its additions</span><span class="zh">fork：标明个人增量</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a></div></div></div></div><div class="wf-column" id="eco-tools" data-group="1" role="group" aria-labelledby="collection-1"><div class="wf-window"><div class="wf-track"><div class="wf-copy" data-original><a class="wf-record" href="https://github.com/Ruadaa/cadence_to_visio" target="_blank" rel="noopener noreferrer" data-item="0" aria-label="Ruadaa/cadence_to_visio — GitHub" style="--card-height:207px"><span class="wf-card wf-tool"><span class="wf-meta"><span class="wf-kind"><span class="en">TOOL</span><span class="zh">工具</span></span><span>02.01</span></span><span class="wf-title">cadence_<wbr>to_<wbr>visio</span><span class="wf-owner">Ruadaa</span><span class="wf-description"><span class="en">Schematic to Visio export</span><span class="zh">原理图导出 Visio</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/MacAnalog/spicexplorer-release" target="_blank" rel="noopener noreferrer" data-item="1" aria-label="MacAnalog/spicexplorer-release — GitHub" style="--card-height:190px"><span class="wf-card wf-tool"><span class="wf-meta"><span class="wf-kind"><span class="en">TOOL</span><span class="zh">工具</span></span><span>02.02</span></span><span class="wf-title">spicexplorer-release</span><span class="wf-owner">MacAnalog</span><span class="wf-description"><span class="en">Spectre backend via the bridge</span><span class="zh">Spectre 后端用本桥接</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/cortalo/VirtuosoKit" target="_blank" rel="noopener noreferrer" data-item="2" aria-label="cortalo/VirtuosoKit — GitHub" style="--card-height:218px"><span class="wf-card wf-tool"><span class="wf-meta"><span class="wf-kind"><span class="en">TOOL</span><span class="zh">工具</span></span><span>02.03</span></span><span class="wf-title">VirtuosoKit</span><span class="wf-owner">cortalo</span><span class="wf-description"><span class="en">Standard-cell place and route</span><span class="zh">标准单元布局布线</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/Johnmc104/tool_virtuoso" target="_blank" rel="noopener noreferrer" data-item="3" aria-label="Johnmc104/tool_virtuoso — GitHub" style="--card-height:180px"><span class="wf-card wf-tool"><span class="wf-meta"><span class="wf-kind"><span class="en">TOOL</span><span class="zh">工具</span></span><span>02.04</span></span><span class="wf-title">tool_<wbr>virtuoso</span><span class="wf-owner">Johnmc104</span><span class="wf-description"><span class="en">vbridge CLI, bridge submodule</span><span class="zh">vbridge 命令行</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/VlHash/Virtuoso-Flow-Plugin" target="_blank" rel="noopener noreferrer" data-item="4" aria-label="VlHash/Virtuoso-Flow-Plugin — GitHub" style="--card-height:207px"><span class="wf-card wf-tool"><span class="wf-meta"><span class="wf-kind"><span class="en">TOOL</span><span class="zh">工具</span></span><span>02.05</span></span><span class="wf-title">Virtuoso-Flow-Plugin</span><span class="wf-owner">VlHash</span><span class="wf-description"><span class="en">Workflow plugin, credits us</span><span class="zh">工作流插件，致谢本项目</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/jianshengchuanchaun/virtuoso-wiki-bridge" target="_blank" rel="noopener noreferrer" data-item="5" aria-label="jianshengchuanchaun/virtuoso-wiki-bridge — GitHub" style="--card-height:190px"><span class="wf-card wf-tool"><span class="wf-meta"><span class="wf-kind"><span class="en">TOOL</span><span class="zh">工具</span></span><span>02.06</span></span><span class="wf-title">virtuoso-wiki-bridge</span><span class="wf-owner">jianshengchuanchaun</span><span class="wf-description"><span class="en">Knowledge vault and wrappers</span><span class="zh">知识库与桥接封装</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/xz0831/primesim-bridge" target="_blank" rel="noopener noreferrer" data-item="6" aria-label="xz0831/primesim-bridge — GitHub" style="--card-height:218px"><span class="wf-card wf-tool"><span class="wf-meta"><span class="wf-kind"><span class="en">TOOL</span><span class="zh">工具</span></span><span>02.07</span></span><span class="wf-title">primesim-bridge</span><span class="wf-owner">xz0831</span><span class="wf-description"><span class="en">PrimeSim companion plugin</span><span class="zh">PrimeSim 配套插件</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/Lway-ai/rfic-passive-wizard" target="_blank" rel="noopener noreferrer" data-item="7" aria-label="Lway-ai/rfic-passive-wizard — GitHub" style="--card-height:180px"><span class="wf-card wf-tool"><span class="wf-meta"><span class="wf-kind"><span class="en">TOOL</span><span class="zh">工具</span></span><span>02.08</span></span><span class="wf-title">rfic-passive-wizard</span><span class="wf-owner">Lway-ai</span><span class="wf-description"><span class="en">RFIC inductor generator</span><span class="zh">RFIC 电感与变压器生成</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/lizhangmai/Sigilicon" target="_blank" rel="noopener noreferrer" data-item="8" aria-label="lizhangmai/Sigilicon — GitHub" style="--card-height:207px"><span class="wf-card wf-tool"><span class="wf-meta"><span class="wf-kind"><span class="en">TOOL</span><span class="zh">工具</span></span><span>02.09</span></span><span class="wf-title">Sigilicon</span><span class="wf-owner">lizhangmai</span><span class="wf-description"><span class="en">Thin layer over the bridge</span><span class="zh">本桥接的薄封装</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/Dachy-git/prj_pyopt" target="_blank" rel="noopener noreferrer" data-item="9" aria-label="Dachy-git/prj_pyopt — GitHub" style="--card-height:190px"><span class="wf-card wf-tool"><span class="wf-meta"><span class="wf-kind"><span class="en">TOOL</span><span class="zh">工具</span></span><span>02.10</span></span><span class="wf-title">prj_<wbr>pyopt</span><span class="wf-owner">Dachy-git</span><span class="wf-description"><span class="en">Optimization, pyopt_bridge</span><span class="zh">优化流程与封装</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/BucketSran/virtuosoBridgeCi" target="_blank" rel="noopener noreferrer" data-item="10" aria-label="BucketSran/virtuosoBridgeCi — GitHub" style="--card-height:218px"><span class="wf-card wf-tool"><span class="wf-meta"><span class="wf-kind"><span class="en">TOOL</span><span class="zh">工具</span></span><span>02.11</span></span><span class="wf-title">virtuosoBridgeCi</span><span class="wf-owner">BucketSran</span><span class="wf-description"><span class="en">Minimal EDA CI</span><span class="zh">最小 EDA CI</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a></div></div></div></div><div class="wf-column" id="eco-agents" data-group="2" role="group" aria-labelledby="collection-2"><div class="wf-window"><div class="wf-track"><div class="wf-copy" data-original><a class="wf-record" href="https://github.com/PKU-IDEA/PANDA" target="_blank" rel="noopener noreferrer" data-item="0" aria-label="PKU-IDEA/PANDA — GitHub" style="--card-height:190px"><span class="wf-card wf-project"><span class="wf-meta"><span class="wf-kind"><span class="en">PROJECT</span><span class="zh">设计项目</span></span><span>03.01</span></span><span class="wf-title">PANDA</span><span class="wf-owner">PKU-IDEA</span><span class="wf-description"><span class="en">LLM analog design to layout</span><span class="zh">LLM 模拟设计到版图</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/lixunqi12/virtuoso-agent" target="_blank" rel="noopener noreferrer" data-item="1" aria-label="lixunqi12/virtuoso-agent — GitHub" style="--card-height:218px"><span class="wf-card wf-project"><span class="wf-meta"><span class="wf-kind"><span class="en">PROJECT</span><span class="zh">设计项目</span></span><span>03.02</span></span><span class="wf-title">virtuoso-agent</span><span class="wf-owner">lixunqi12</span><span class="wf-description"><span class="en">LLM closed-loop optimizer</span><span class="zh">LLM 闭环优化</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/HrishikeshGawasIIITH/EDA_Agent" target="_blank" rel="noopener noreferrer" data-item="2" aria-label="HrishikeshGawasIIITH/EDA_Agent — GitHub" style="--card-height:180px"><span class="wf-card wf-project"><span class="wf-meta"><span class="wf-kind"><span class="en">PROJECT</span><span class="zh">设计项目</span></span><span>03.03</span></span><span class="wf-title">EDA_<wbr>Agent</span><span class="wf-owner">HrishikeshGawasIIITH</span><span class="wf-description"><span class="en">Schematic chat agent</span><span class="zh">原理图对话智能体</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/XuMai25/Virtuoso-Design-Agent" target="_blank" rel="noopener noreferrer" data-item="3" aria-label="XuMai25/Virtuoso-Design-Agent — GitHub" style="--card-height:207px"><span class="wf-card wf-project"><span class="wf-meta"><span class="wf-kind"><span class="en">PROJECT</span><span class="zh">设计项目</span></span><span>03.04</span></span><span class="wf-title">Virtuoso-Design-Agent</span><span class="wf-owner">XuMai25</span><span class="wf-description"><span class="en">Design orchestration layer</span><span class="zh">设计编排层</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/aocriup233/Analog-Design-Orchestrator" target="_blank" rel="noopener noreferrer" data-item="4" aria-label="aocriup233/Analog-Design-Orchestrator — GitHub" style="--card-height:190px"><span class="wf-card wf-project"><span class="wf-meta"><span class="wf-kind"><span class="en">PROJECT</span><span class="zh">设计项目</span></span><span>03.05</span></span><span class="wf-title">Analog-Design-Orchestrator</span><span class="wf-owner">aocriup233</span><span class="wf-description"><span class="en">Artifact-driven design flow</span><span class="zh">产物驱动的设计流程</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/chenzc24/t28-ioring" target="_blank" rel="noopener noreferrer" data-item="5" aria-label="chenzc24/t28-ioring — GitHub" style="--card-height:218px"><span class="wf-card wf-project"><span class="wf-meta"><span class="wf-kind"><span class="en">PROJECT</span><span class="zh">设计项目</span></span><span>03.06</span></span><span class="wf-title">t28-ioring</span><span class="wf-owner">chenzc24</span><span class="wf-description"><span class="en">28 nm IO ring agent skills</span><span class="zh">28 nm IO ring 技能</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/chenzc24/t180-ioring" target="_blank" rel="noopener noreferrer" data-item="6" aria-label="chenzc24/t180-ioring — GitHub" style="--card-height:180px"><span class="wf-card wf-project"><span class="wf-meta"><span class="wf-kind"><span class="en">PROJECT</span><span class="zh">设计项目</span></span><span>03.07</span></span><span class="wf-title">t180-ioring</span><span class="wf-owner">chenzc24</span><span class="wf-description"><span class="en">180 nm IO ring agent skills</span><span class="zh">180 nm IO ring 技能</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/chenzc24/SIM-IO" target="_blank" rel="noopener noreferrer" data-item="7" aria-label="chenzc24/SIM-IO — GitHub" style="--card-height:207px"><span class="wf-card wf-project"><span class="wf-meta"><span class="wf-kind"><span class="en">PROJECT</span><span class="zh">设计项目</span></span><span>03.08</span></span><span class="wf-title">SIM-IO</span><span class="wf-owner">chenzc24</span><span class="wf-description"><span class="en">IO simulation skills</span><span class="zh">IO 仿真技能</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/chchan18/8-9bit-vcm-based-sar" target="_blank" rel="noopener noreferrer" data-item="8" aria-label="chchan18/8-9bit-vcm-based-sar — GitHub" style="--card-height:190px"><span class="wf-card wf-project"><span class="wf-meta"><span class="wf-kind"><span class="en">PROJECT</span><span class="zh">设计项目</span></span><span>03.09</span></span><span class="wf-title">8-9bit-vcm-based-sar</span><span class="wf-owner">chchan18</span><span class="wf-description"><span class="en">Agent-driven SAR ADC design</span><span class="zh">智能体设计 SAR ADC</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/OpenDgK/IC_opt" target="_blank" rel="noopener noreferrer" data-item="9" aria-label="OpenDgK/IC_opt — GitHub" style="--card-height:218px"><span class="wf-card wf-project"><span class="wf-meta"><span class="wf-kind"><span class="en">PROJECT</span><span class="zh">设计项目</span></span><span>03.10</span></span><span class="wf-title">IC_<wbr>opt</span><span class="wf-owner">OpenDgK</span><span class="wf-description"><span class="en">Two-stage PA optimization</span><span class="zh">两级功放优化</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/defineiocc02/Digital_process.srcs" target="_blank" rel="noopener noreferrer" data-item="10" aria-label="defineiocc02/Digital_process.srcs — GitHub" style="--card-height:180px"><span class="wf-card wf-project"><span class="wf-meta"><span class="wf-kind"><span class="en">PROJECT</span><span class="zh">设计项目</span></span><span>03.11</span></span><span class="wf-title">Digital_<wbr>process.srcs</span><span class="wf-owner">defineiocc02</span><span class="wf-description"><span class="en">SAR ADC workspace</span><span class="zh">SAR ADC 工程</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/dude1wudv/vdmos-tid-research" target="_blank" rel="noopener noreferrer" data-item="11" aria-label="dude1wudv/vdmos-tid-research — GitHub" style="--card-height:207px"><span class="wf-card wf-project"><span class="wf-meta"><span class="wf-kind"><span class="en">PROJECT</span><span class="zh">设计项目</span></span><span>03.12</span></span><span class="wf-title">vdmos-tid-research</span><span class="wf-owner">dude1wudv</span><span class="wf-description"><span class="en">VDMOS radiation research</span><span class="zh">VDMOS 辐照研究</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/CATEular/Eularcat-PersonalWebsite" target="_blank" rel="noopener noreferrer" data-item="12" aria-label="CATEular/Eularcat-PersonalWebsite — GitHub" style="--card-height:190px"><span class="wf-card wf-project"><span class="wf-meta"><span class="wf-kind"><span class="en">PROJECT</span><span class="zh">设计项目</span></span><span>03.13</span></span><span class="wf-title">Eularcat-PersonalWebsite</span><span class="wf-owner">CATEular</span><span class="wf-description"><span class="en">Virtuoso workflow skills</span><span class="zh">Virtuoso 工作流技能</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/ZheHDestiny/ADDA_PJ" target="_blank" rel="noopener noreferrer" data-item="13" aria-label="ZheHDestiny/ADDA_PJ — GitHub" style="--card-height:218px"><span class="wf-card wf-project"><span class="wf-meta"><span class="wf-kind"><span class="en">PROJECT</span><span class="zh">设计项目</span></span><span>03.14</span></span><span class="wf-title">ADDA_<wbr>PJ</span><span class="wf-owner">ZheHDestiny</span><span class="wf-description"><span class="en">SAR ADC course project</span><span class="zh">SAR ADC 课程项目</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a></div></div></div></div><div class="wf-column" id="eco-skills" data-group="3" role="group" aria-labelledby="collection-3"><div class="wf-window"><div class="wf-track"><div class="wf-copy" data-original><a class="wf-record" href="https://github.com/Pyrojewel-zard/pyrojewel-claude-code-public2" target="_blank" rel="noopener noreferrer" data-item="0" aria-label="Pyrojewel-zard/pyrojewel-claude-code-public2 — GitHub" style="--card-height:218px"><span class="wf-card wf-manual"><span class="wf-meta"><span class="wf-kind"><span class="en">REFERENCE</span><span class="zh">参考资料</span></span><span>04.01</span></span><span class="wf-title">pyrojewel-claude-code-public2</span><span class="wf-owner">Pyrojewel-zard</span><span class="wf-description"><span class="en">Skill collection</span><span class="zh">技能合集</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/agihub-source/virtuoso-bridge-lite-knowledge-graph" target="_blank" rel="noopener noreferrer" data-item="1" aria-label="agihub-source/virtuoso-bridge-lite-knowledge-graph — GitHub" style="--card-height:180px"><span class="wf-card wf-manual"><span class="wf-meta"><span class="wf-kind"><span class="en">REFERENCE</span><span class="zh">参考资料</span></span><span>04.02</span></span><span class="wf-title">virtuoso-bridge-lite-knowledge-graph</span><span class="wf-owner">agihub-source</span><span class="wf-description"><span class="en">Knowledge graph of this repo</span><span class="zh">本仓库知识图谱</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/alexyudragonsword-collab/Virtuo_B" target="_blank" rel="noopener noreferrer" data-item="2" aria-label="alexyudragonsword-collab/Virtuo_B — GitHub" style="--card-height:207px"><span class="wf-card wf-manual"><span class="wf-meta"><span class="wf-kind"><span class="en">REFERENCE</span><span class="zh">参考资料</span></span><span>04.03</span></span><span class="wf-title">Virtuo_<wbr>B</span><span class="wf-owner">alexyudragonsword-collab</span><span class="wf-description"><span class="en">Mirror and analysis</span><span class="zh">镜像与分析</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/lawrence3699/agent-skills-corpus" target="_blank" rel="noopener noreferrer" data-item="3" aria-label="lawrence3699/agent-skills-corpus — GitHub" style="--card-height:190px"><span class="wf-card wf-manual"><span class="wf-meta"><span class="wf-kind"><span class="en">REFERENCE</span><span class="zh">参考资料</span></span><span>04.04</span></span><span class="wf-title">agent-skills-corpus</span><span class="wf-owner">lawrence3699</span><span class="wf-description"><span class="en">Agent skills dataset</span><span class="zh">智能体技能数据集</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a></div></div></div></div><div class="wf-column" id="eco-mentions" data-group="4" role="group" aria-labelledby="collection-4"><div class="wf-window"><div class="wf-track"><div class="wf-copy" data-original><a class="wf-record" href="https://github.com/Ryuwang3/snapgene-bridge" target="_blank" rel="noopener noreferrer" data-item="0" aria-label="Ryuwang3/snapgene-bridge — GitHub" style="--card-height:180px"><span class="wf-card wf-citation"><span class="wf-meta"><span class="wf-kind"><span class="en">SOURCE</span><span class="zh">收录来源</span></span><span>05.01</span></span><span class="wf-title">snapgene-bridge</span><span class="wf-owner">Ryuwang3</span><span class="wf-description"><span class="en">Same pattern for SnapGene</span><span class="zh">同模式接入 SnapGene</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/JonathanLiu1401/Aspice" target="_blank" rel="noopener noreferrer" data-item="1" aria-label="JonathanLiu1401/Aspice — GitHub" style="--card-height:207px"><span class="wf-card wf-citation"><span class="wf-meta"><span class="wf-kind"><span class="en">SOURCE</span><span class="zh">收录来源</span></span><span>05.02</span></span><span class="wf-title">Aspice</span><span class="wf-owner">JonathanLiu1401</span><span class="wf-description"><span class="en">Recommends the bridge</span><span class="zh">推荐本项目</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/ds54e/ams-signals" target="_blank" rel="noopener noreferrer" data-item="2" aria-label="ds54e/ams-signals — GitHub" style="--card-height:190px"><span class="wf-card wf-citation"><span class="wf-meta"><span class="wf-kind"><span class="en">SOURCE</span><span class="zh">收录来源</span></span><span>05.03</span></span><span class="wf-title">ams-signals</span><span class="wf-owner">ds54e</span><span class="wf-description"><span class="en">Mixed-signal tracker</span><span class="zh">混合信号动态追踪</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/cloudliu01/useful_projects" target="_blank" rel="noopener noreferrer" data-item="3" aria-label="cloudliu01/useful_projects — GitHub" style="--card-height:218px"><span class="wf-card wf-citation"><span class="wf-meta"><span class="wf-kind"><span class="en">SOURCE</span><span class="zh">收录来源</span></span><span>05.04</span></span><span class="wf-title">useful_<wbr>projects</span><span class="wf-owner">cloudliu01</span><span class="wf-description"><span class="en">SKILL project list</span><span class="zh">SKILL 项目清单</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/OmarSiwy/Schemify" target="_blank" rel="noopener noreferrer" data-item="4" aria-label="OmarSiwy/Schemify — GitHub" style="--card-height:180px"><span class="wf-card wf-citation"><span class="wf-meta"><span class="wf-kind"><span class="en">SOURCE</span><span class="zh">收录来源</span></span><span>05.05</span></span><span class="wf-title">Schemify</span><span class="wf-owner">OmarSiwy</span><span class="wf-description"><span class="en">Research notes</span><span class="zh">调研笔记</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/ActuallyTaylor/strata" target="_blank" rel="noopener noreferrer" data-item="5" aria-label="ActuallyTaylor/strata — GitHub" style="--card-height:207px"><span class="wf-card wf-citation"><span class="wf-meta"><span class="wf-kind"><span class="en">SOURCE</span><span class="zh">收录来源</span></span><span>05.06</span></span><span class="wf-title">strata</span><span class="wf-owner">ActuallyTaylor</span><span class="wf-description"><span class="en">Repository dataset</span><span class="zh">仓库数据集</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/joaofix/fixturedb" target="_blank" rel="noopener noreferrer" data-item="6" aria-label="joaofix/fixturedb — GitHub" style="--card-height:190px"><span class="wf-card wf-citation"><span class="wf-meta"><span class="wf-kind"><span class="en">SOURCE</span><span class="zh">收录来源</span></span><span>05.07</span></span><span class="wf-title">fixturedb</span><span class="wf-owner">joaofix</span><span class="wf-description"><span class="en">Test fixture dataset</span><span class="zh">测试夹具数据集</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/Luis24M/vibeSecurity" target="_blank" rel="noopener noreferrer" data-item="7" aria-label="Luis24M/vibeSecurity — GitHub" style="--card-height:218px"><span class="wf-card wf-citation"><span class="wf-meta"><span class="wf-kind"><span class="en">SOURCE</span><span class="zh">收录来源</span></span><span>05.08</span></span><span class="wf-title">vibeSecurity</span><span class="wf-owner">Luis24M</span><span class="wf-description"><span class="en">Security metrics</span><span class="zh">安全指标</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/laojiahuo2003/github-daily-report" target="_blank" rel="noopener noreferrer" data-item="8" aria-label="laojiahuo2003/github-daily-report — GitHub" style="--card-height:180px"><span class="wf-card wf-citation"><span class="wf-meta"><span class="wf-kind"><span class="en">SOURCE</span><span class="zh">收录来源</span></span><span>05.09</span></span><span class="wf-title">github-daily-report</span><span class="wf-owner">laojiahuo2003</span><span class="wf-description"><span class="en">Daily GitHub report</span><span class="zh">GitHub 日报</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a><a class="wf-record" href="https://github.com/arthurspk/guiadoconhecimento" target="_blank" rel="noopener noreferrer" data-item="9" aria-label="arthurspk/guiadoconhecimento — GitHub" style="--card-height:207px"><span class="wf-card wf-citation"><span class="wf-meta"><span class="wf-kind"><span class="en">SOURCE</span><span class="zh">收录来源</span></span><span>05.10</span></span><span class="wf-title">guiadoconhecimento</span><span class="wf-owner">arthurspk</span><span class="wf-description"><span class="en">Knowledge guide</span><span class="zh">知识导航</span></span><span class="wf-link" aria-hidden="true">↗</span></span></a></div></div></div></div></div></div></div>
+</section>
+</section><div class="content-band band-architecture"><div class="wrap"><section class="block" id="architecture">
+<span class="section-no">05</span><h2><span class="en">Architecture</span><span class="zh">架构</span></h2>
+<figure class="figure"><img src="/assets/arch.png?v=20261012-guide" width="1800" height="756" loading="lazy" alt="Architecture: VirtuosoClient sends SKILL over TCP to the bridge daemon inside Virtuoso; SSHClient manages tunnels and files; SpectreSimulator runs Spectre separately." /></figure>
+<ul class="bullets"><li><span class="en"><strong>VirtuosoClient</strong>: a plain TCP SKILL client. Sends SKILL as JSON and gets results; it knows nothing about SSH.</span><span class="zh"><strong>VirtuosoClient</strong>：纯 TCP 的 SKILL 客户端，以 JSON 发送 SKILL 并取回结果，不关心 SSH。</span></li><li><span class="en"><strong>SpectreSimulator</strong>: runs standalone Spectre locally or over SSH and parses PSF ASCII results into Python data.</span><span class="zh"><strong>SpectreSimulator</strong>：在本机或经 SSH 运行独立 Spectre，把 PSF ASCII 结果解析成 Python 数据。</span></li><li><span class="en"><strong>SSHClient</strong>: resolves the GUI, deployment, daemon and Spectre host roles, keeps a standalone port forward to the daemon host, and runs role-specific commands and transfers over OpenSSH or Paramiko. Skipped in local mode.</span><span class="zh"><strong>SSHClient</strong>：解析 GUI、部署、daemon、Spectre 各主机角色，维持到 daemon 主机的独立端口转发，并通过 OpenSSH 或 Paramiko 执行各角色的命令与文件传输。本机模式下不使用。</span></li></ul>
+<p><span class="en">VirtuosoClient works with any TCP endpoint (SSH tunnel, VPN, LAN or local), and each profile manages its own tunnel to a separate server. To see the raw mechanism, start with <a href="https://github.com/Arcadia-1/virtuoso-bridge-lite/blob/main/src/virtuoso_bridge/virtuoso/basic/resources/ramic_bridge.il">ramic_bridge.il</a> and <a href="https://github.com/Arcadia-1/virtuoso-bridge-lite/blob/main/src/virtuoso_bridge/virtuoso/basic/bridge.py">bridge.py</a>.</span><span class="zh">VirtuosoClient 可连接任何 TCP 端点（SSH 隧道、VPN、局域网或本机），每个配置各自管理到一台服务器的隧道。想看底层机制，从 <a href="https://github.com/Arcadia-1/virtuoso-bridge-lite/blob/main/src/virtuoso_bridge/virtuoso/basic/resources/ramic_bridge.il">ramic_bridge.il</a> 和 <a href="https://github.com/Arcadia-1/virtuoso-bridge-lite/blob/main/src/virtuoso_bridge/virtuoso/basic/bridge.py">bridge.py</a> 读起。</span></p>
+</section></div></div><div class="content-band band-cite"><div class="wrap"><section class="block" id="cite">
+<span class="section-no">06</span><h2><span class="en">Citation</span><span class="zh">引用</span></h2>
+<p><span class="en">If you use Virtuoso Bridge in academic work, please cite:</span><span class="zh">如果在学术工作中使用了 Virtuoso Bridge，请引用：</span></p>
+<div class="code"><div class="code-head"><span>BibTeX</span><button class="copy-button js-only" type="button" data-copy="guide-code-4"><span class="en">Copy</span><span class="zh">复制</span></button></div><pre id="guide-code-4"><code>@article{zhang2025virtuosobridge,
+  title   = {Virtuoso-Bridge: An Agent-Native Bridge for Remote Analog and Mixed-Signal Design Automation},
+  author  = {Zhang, Zhishuai and Li, Xintian and Sun, Nan and Jie, Lu},
   year    = {2025}
-}</div>
-  </div>
-
-  <div class="footer">
-    <p>
-      <a href="https://github.com/Arcadia-1/virtuoso-bridge-lite">GitHub</a> &middot;
-      MIT License &middot;
-      Tsinghua University
-    </p>
-    <div class="traffic-stats" aria-label="Traffic statistics">
-      <span>Total site views <strong id="busuanzi_site_pv">...</strong></span>
-      <span>Unique visitors <strong id="busuanzi_site_uv">...</strong></span>
-      <span>Current page views <strong id="busuanzi_page_pv">...</strong></span>
-    </div>
-  </div>
-
-</div>
-<script>
-  (function () {
-    var host = window.location.hostname;
-    if (!host || host === "localhost" || host === "127.0.0.1" || host === "::1") {
-      return;
-    }
-    var script = document.createElement("script");
-    script.src = "https://api.busuanzi.cc/static/3.6.9/busuanzi.min.js";
-    script.defer = true;
-    document.body.appendChild(script);
-  }());
-</script>
-</body>
-</html>
+}</code></pre></div>
+<p><span class="en">Authors: Zhishuai Zhang, Xintian Li, Nan Sun and Lu Jie, Tsinghua University.</span><span class="zh">作者：Zhishuai Zhang、Xintian Li、Nan Sun、Lu Jie（清华大学）。</span></p>
+</section></div></div></main><footer class="site-footer">
+      <div class="wrap">
+        <div class="footer-row">
+          <p class="footer-copyright">
+            © 2026 Virtuoso Bridge <span aria-hidden="true">·</span> MIT
+          </p>
+          <nav class="footer-links" aria-label="Footer">
+            <a href="https://www.tokenzhang.com/"
+              ><span class="en">Homepage ↗</span
+              ><span class="zh">个人主页 ↗</span></a
+            >
+            <a href="/privacy/" data-internal
+              ><span class="en">Privacy</span><span class="zh">隐私</span></a
+            >
+            <a
+              class="footer-analytics"
+              href="/analytics/"
+              title="Visitor analytics / 访问统计"
+              ><strong data-visitors>—</strong> <span class="en">visitors</span
+              ><span class="zh">访客</span> · <strong data-views>—</strong>
+              <span class="en">views</span><span class="zh">浏览</span></a
+            >
+          </nav>
+        </div>
+        <p class="footer-notice">
+          <span class="en"
+            >Independent open-source project. Cadence, Virtuoso and Spectre are
+            trademarks of Cadence Design Systems.</span
+          ><span class="zh"
+            >独立开源项目。Cadence、Virtuoso 和 Spectre 为 Cadence Design
+            Systems 的商标。</span
+          >
+        </p>
+      </div>
+    </footer><div id="toast" class="toast" role="status" aria-live="polite" hidden></div></body></html>

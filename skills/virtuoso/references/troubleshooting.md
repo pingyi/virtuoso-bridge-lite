@@ -10,7 +10,7 @@ When something fails unexpectedly, search this file for keywords (error message,
 Never use `csh()` or `sh()` to verify files or read command output. They only return success/failure. Use `download_file` (SSH/SCP) for all remote file operations.
 
 ### `procedurep()` returns `nil` for compiled functions
-Functions like `maeCreateNetlistForCorner` are compiled into .cxt — `procedurep()` returns nil even though they work. Test by calling with wrong args instead.
+Functions like `maeCreateNetlistForCorner` are compiled into .cxt — `procedurep()` returns nil even though they work. Check the installed documentation and a supported `fboundp` probe; deliberately calling with wrong arguments is not a safe availability test.
 
 ### `printf` inside `foreach` loses output to Python
 `execute_skill()` returns the **value** of the SKILL expression, not whatever `printf` wrote to the CIW. So a loop that prints per iteration leaves Python holding only the loop's return value (often the input list, which prints as opaque `dd:0x…` handles):
@@ -86,7 +86,7 @@ blocked the same CIW event loop that serves the bridge.
 virtuoso-bridge inspect-dialogs --pid PID --json
 virtuoso-bridge list-windows --top-level --json
 # Only with explicit authorization for this window and action:
-virtuoso-bridge dismiss-window WINDOW_ID --action escape
+virtuoso-bridge dismiss-window WINDOW_ID --pid PID --action escape
 ```
 
 The first command inspects one process without altering any window. A modal
@@ -94,28 +94,18 @@ can come from the human sharing the CIW; do not automatically close or cancel
 it. CIW screenshots and form queries can use the blocked SKILL channel, so
 they are unsuitable as the first diagnostic. See
 [Shared CIW Dialog Protection](shared-ciw-dialogs.md) for the opt-in guard,
-structured outcomes, and watchdog limitations.
+structured outcomes, and how a poisoned lane resynchronizes.
 
 ### ASSEMBLER-8127: cellview already open in edit mode
 `maeMakeEditable()` fails with a modal dialog when the same cellview is already open in editable mode in another session (e.g. `fnxSession21` has it open while you try from `fnxSession0`). This dialog **completely blocks** the SKILL channel — even `hiFormDone` cannot reach it.
 
 **Never call `maeMakeEditable()` unconditionally.** It can deadlock the bridge.
 
-**Recovery when stuck:** if the remote has no `python3` or `xdotool`, send Enter via Python 2.7 + ctypes directly on the Virtuoso display:
-```bash
-# Find the Virtuoso DISPLAY (check /proc/<pid>/environ)
-DISPLAY=<virtuoso_display> python2.7 -c "
-import ctypes, ctypes.util
-xlib = ctypes.cdll.LoadLibrary(ctypes.util.find_library('X11'))
-xtst = ctypes.cdll.LoadLibrary(ctypes.util.find_library('Xtst'))
-dpy = xlib.XOpenDisplay(None)
-kc = xlib.XKeysymToKeycode(dpy, 0xff0d)
-xtst.XTestFakeKeyEvent(dpy, kc, True, 0)
-xtst.XTestFakeKeyEvent(dpy, kc, False, 0)
-xlib.XFlush(dpy)
-xlib.XCloseDisplay(dpy)
-"
-```
+**Recovery when stuck:** inspect the explicitly selected Virtuoso PID through
+X11 and let the user resolve the dialog. A fallback that injects Enter into the
+current focus can affect a different user's window. If inspection is unavailable
+or indeterminate, stop GUI mutations and request manual resolution. See
+[Shared CIW Dialog Protection](shared-ciw-dialogs.md).
 
 **Prevention:** before calling `maeMakeEditable()`, check if another session already has the cellview open in edit mode.
 
@@ -141,6 +131,16 @@ client.execute_skill(f'hiZoom(window({WID}) list(0:0 700:700))')
 client.execute_skill(f'hiRedraw(window({WID}))')
 ```
 `window(N)` is the SKILL way to fetch a window by its integer ID — robust to focus changes. Never rely on `hiGetCurrentWindow()` for multi-step automation.
+
+### Edits do not appear in an open window; layout shows empty boxes
+Database edits do not repaint an open window. The schematic, symbol and
+layout editors (`create()`/`modify()`) redraw the windows that show their
+cellview after saving; raw `execute_skill` edits need `hiRedraw(window(WID))`.
+
+A layout window at stop level 0 (Ctrl+F) draws instances as empty boxes.
+`client.open_window(...)` opens a new layout window at full depth, as Shift+F
+does (`leSetStopLevelToMaxHierDepth`, 31 on IC 23.1); `show_hierarchy=False`
+keeps Virtuoso's own setting. A window that is already open is not changed.
 
 ### `client.screenshot(target=...)` needs an `int`, not `str`
 Targets are dispatched by Python type:
@@ -184,6 +184,19 @@ Or skip SKILL string-matching entirely and filter on the Python side via `client
 
 ### si output location
 `si -batch -command nl` outputs to `<runDir>/netlist` (a single file). But if something goes wrong (e.g. GUI dialog blocked), `spectre.inp` may be nearly empty. Check file size after download.
+
+### `createNetlist` writes into the ADE project directory
+OCEAN's `simulator()` → `design()` → `createNetlist()` writes `<projectDir>/<cell>/<simulator>/<view>/netlist` (and a `psf/` beside it), where `projectDir` is the `asimenv.startup` setting, `~/simulation` by default. Left alone, every run leaves a tree there and rewrites the netlist of the user's own ADE setup for that cell. OCEAN reads `projectDir` when `simulator()` starts the session (checked on IC 6.1.8), so point it elsewhere only around that call and restore it, e.g. inside `unwindProtect`. `client.schematic.export_netlist()` does this: by default it netlists in a private `/tmp` directory and removes it after the download; pass `run_dir=` to keep the package. `simulator()` also closes any OCEAN session already open in that CIW.
+
+### Batch tool exits before an expected artifact appears
+
+Tools such as `strmin` and `ihdl` can fork and write failures only to their own
+logs, so `system()` success is not proof that translation succeeded. Stage local
+input files to the tool's working directory before invocation. On every bounded
+artifact poll, also inspect the tail of that invocation's log for terminal
+failure markers such as `Translation failed`, `XSTRM-273` or `OPEN_FAILED`.
+Stop with the diagnostic when the tool fails rather than waiting out the entire
+timeout. Use unique run directories to exclude stale artifacts.
 
 ---
 

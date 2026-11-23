@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from virtuoso_bridge.env import load_vb_env
+from virtuoso_bridge.cadence_env import CadenceEnvironment
 from virtuoso_bridge.profile import resolve_profile
 from virtuoso_bridge.runtime_paths import artifact_dir
 from virtuoso_bridge.models import ExecutionStatus, SimulationResult
@@ -41,6 +42,10 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_PARALLEL_WORKERS = 4
+
+_SPECTRE_DIAGNOSTIC = re.compile(
+    r"^\s*(?:\w+:\s*)?(?:error|fatal)\s*(?:\(|:)", re.IGNORECASE | re.MULTILINE,
+)
 
 
 SPECTRE_MODE_ARGS: dict[str, list[str]] = {
@@ -80,6 +85,61 @@ def _resolve_spectre_invocation(
     parts = shlex.split(spectre_cmd) if spectre_cmd.strip() else ["spectre"]
     return parts[0], parts[1:]
 
+def spectre_probe_script(spectre_cmd: str = "") -> str:
+    """POSIX sh printing ``SPECTRE_PATH=<command>`` (or ``NOTFOUND``) and ``-V`` output.
+
+    A few lines of ``-V`` output are kept because site wrappers may print a
+    banner before the version line.
+
+    A configured command is split like a simulation's, so a site wrapper with
+    arguments (``site-wrapper spectre``) is probed exactly as it will run.
+    Without one, ``spectre`` on PATH is used.
+    """
+    if not spectre_cmd.strip():
+        return (
+            'if p=$(command -v spectre 2>/dev/null); then printf "SPECTRE_PATH=%s\\n" "$p"; '
+            'spectre -V 2>&1 | head -n 5; else printf "SPECTRE_PATH=NOTFOUND\\n"; fi'
+        )
+    exe, prefix = _resolve_spectre_invocation(spectre_cmd)
+    argv = " ".join(shlex.quote(part) for part in (exe, *prefix))
+    return (
+        f"if command -v {shlex.quote(exe)} >/dev/null 2>&1; then "
+        f"printf 'SPECTRE_PATH=%s\\n' {shlex.quote(spectre_cmd)}; {argv} -V 2>&1 | head -n 5; "
+        "else printf 'SPECTRE_PATH=NOTFOUND\\n'; fi"
+    )
+
+
+def parse_spectre_probe(stdout: str) -> tuple[str | None, str | None]:
+    """Return (command or path, version line) from :func:`spectre_probe_script` output."""
+    path = version = None
+    for line in stdout.splitlines():
+        line = line.strip()
+        if line.startswith("SPECTRE_PATH="):
+            value = line.split("=", 1)[1]
+            path = None if value == "NOTFOUND" else value
+        elif line.startswith("@(#)$CDS:") and version is None:
+            version = line
+    return path, version
+
+
+def probe_spectre_locally(spectre_cmd: str = "") -> tuple[str | None, str | None]:
+    """Like :func:`spectre_probe_script` on this machine, without a shell."""
+    exe, prefix = _resolve_spectre_invocation(spectre_cmd or "spectre")
+    path = shutil.which(exe)
+    if not path:
+        return None, None
+    try:
+        result = subprocess.run([path, *prefix, "-V"], capture_output=True, text=True, timeout=15)
+    except Exception:
+        return (spectre_cmd if prefix else path), None
+    version = next(
+        (line.strip() for line in (result.stdout + result.stderr).splitlines()
+         if line.strip().startswith("@(#)$CDS:")),
+        None,
+    )
+    return (spectre_cmd if prefix else path), version
+
+
 def spectre_mode_args(mode: str) -> list[str]:
     """Return standard Spectre CLI arguments for a named simulation mode."""
     key = mode.strip().lower()
@@ -96,6 +156,7 @@ def _build_spectre_argv(
     netlist_path: str,
     raw_dir: str | None = None,
     log_file: str | None = None,
+    license_queue_timeout: int | None = 900,
 ) -> list[str]:
     """Construct a fuller Spectre argv similar to direct production runs."""
     spectre_bin, cmd_prefix_args = _resolve_spectre_invocation(spectre_cmd)
@@ -107,7 +168,11 @@ def _build_spectre_argv(
     if "-64" not in all_flags and "-32" not in all_flags:
         argv.append("-64")
     argv.append(netlist_path)
-    queue_args = [] if "+lqtimeout" in all_flags else ["+lqtimeout", "900"]
+    queue_args = (
+        ["+lqtimeout", str(license_queue_timeout)]
+        if license_queue_timeout is not None and not {"+lqtimeout", "+lqt"}.intersection(all_flags)
+        else []
+    )
     warning_args = [] if "-maxw" in all_flags else ["-maxw", "5"]
     notice_args = [] if "-maxn" in all_flags else ["-maxn", "5"]
     argv.append("+escchars")
@@ -139,6 +204,8 @@ def _run_spectre_local(
     work_dir: Path | None = None,
     output_format: str | None = "psfascii",
     cadence_cshrc: str | None = None,
+    cadence_env: CadenceEnvironment | None = None,
+    license_queue_timeout: int | None = 900,
 ) -> _SpectreRunResult:
     """Run Spectre as a local subprocess."""
     params = params or {}
@@ -159,11 +226,13 @@ def _run_spectre_local(
         netlist_path=str(netlist),
         raw_dir=raw_dir,
         log_file=log_file,
+        license_queue_timeout=license_queue_timeout,
     )
     spectre_command = " ".join(shlex.quote(part) for part in cmd)
     command = cmd
-    if cadence_cshrc:
-        command = ["csh", "-fc", f"source {shlex.quote(cadence_cshrc)}; exec {spectre_command}"]
+    environment = cadence_env or CadenceEnvironment(cadence_cshrc or "")
+    if environment.script:
+        command = ["sh", "-c", environment.wrap(spectre_command)]
     logger.debug("Running Spectre locally: %s (cwd=%s)", spectre_command, cwd)
 
     try:
@@ -225,6 +294,8 @@ def _run_spectre_remote(
     output_format: str | None = "psfascii",
     timeout: int = 600,
     keep_remote_files: bool = False,
+    cadence_env: CadenceEnvironment | None = None,
+    license_queue_timeout: int | None = 900,
 ) -> _SpectreRunResult:
     """Run Spectre on a remote host: upload netlist, run, download results."""
     run_id = uuid.uuid4().hex[:8]
@@ -246,35 +317,24 @@ def _run_spectre_remote(
         netlist_path=f"{remote_dir}/{netlist.name}",
         raw_dir=remote_raw_dir,
         log_file=remote_log_file,
+        license_queue_timeout=license_queue_timeout,
     )
     spectre_command = " ".join(shlex.quote(arg) for arg in spectre_argv)
     logger.info("[remote] %s", spectre_command)
-    print(f"[Command] {spectre_command}")
-    print("[Exec] Remote simulation running...")
 
-    # Source Cadence/Mentor cshrc in csh, then exec spectre — one command, no wrapper file
-    _cadence_val = os.environ.get("VB_CADENCE_CSHRC", "").strip()
-    _mentor_val = os.environ.get("VB_MENTOR_CSHRC", "").strip()
-    source_lines: list[str] = []
-    for cshrc in (_cadence_val, _mentor_val):
-        if cshrc:
-            source_lines.append(f"source {shlex.quote(cshrc)}")
-    csh_body = "; ".join(source_lines) if source_lines else ":"
-    # Export HOSTNAME & LD_LIBRARY_PATH so csh inherits them (.cshrc may reference $HOSTNAME)
-    env_setup = (
-        'HOSTNAME=`hostname 2>/dev/null || echo localhost`; export HOSTNAME && '
-        'export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" && '
-    )
+    environment = cadence_env or CadenceEnvironment.from_env()
+    run_command = f"exec {spectre_command}"
+    mentor_script = os.environ.get("VB_MENTOR_CSHRC", "").strip()
+    if mentor_script:
+        run_command = CadenceEnvironment(mentor_script).wrap(run_command)
+    run_command = environment.wrap(run_command)
     pid_file = f"{remote_dir}/spectre.pid"
-    # Run spectre inside csh for Cadence env, then record PID from sh wrapper
-    # csh runs spectre; sh wrapper handles PID tracking (csh $! syntax differs)
-    csh_inner = f"{csh_body}; {spectre_command}"
-    exec_cmd = (
-        f"{env_setup}"
-        f"mkdir -p {shlex.quote(remote_raw_dir)} && "
-        f"csh -c {shlex.quote(csh_inner)} & "
-        f"SPID=$!; echo $SPID > {shlex.quote(pid_file)}; wait $SPID"
+    exec_body = (
+        f"mkdir -p {shlex.quote(remote_raw_dir)} || exit $?; "
+        f"{run_command} & "
+        f'SPID=$!; echo "$SPID" > {shlex.quote(pid_file)}; wait "$SPID"'
     )
+    exec_cmd = f"sh -c {shlex.quote(exec_body)}"
 
     logger.info("[remote] %s", exec_cmd)
     task = run_remote_task(
@@ -302,12 +362,10 @@ def _run_spectre_remote(
         stdout = (task.stdout or "").strip()
         stderr = (task.stderr or "").strip()
         if stdout or stderr:
-            print("[Simulation output]")
-            if stdout:
-                print(stdout)
-            if stderr:
-                print("[stderr]")
-                print(stderr)
+            logger.warning(
+                "Spectre exited with %s\n[stdout]\n%s\n[stderr]\n%s",
+                task.returncode, stdout, stderr,
+            )
 
     def _cleanup_remote_run_dir() -> None:
         if not keep_remote_files and task.remote_dir:
@@ -316,6 +374,13 @@ def _run_spectre_remote(
                 logger.debug("Cleaned up remote Spectre directory: %s", task.remote_dir)
             except Exception:  # noqa: S110
                 logger.warning("Failed to clean up remote Spectre directory: %s", task.remote_dir)
+
+    # Kept remote files stay usable from the remote host (e.g. ViVA
+    # openResults on remote_raw_dir); deleted ones are not reported.
+    kept = (
+        {"remote_dir": task.remote_dir or remote_dir, "remote_raw_dir": remote_raw_dir}
+        if keep_remote_files else {}
+    )
 
     try:
         base_output_dir = Path(base_output_dir).resolve()
@@ -338,6 +403,7 @@ def _run_spectre_remote(
                     "timings": timings | {"download_total": download_total},
                     "command": exec_cmd,
                     "spectre_command": spectre_command,
+                    **kept,
                 },
             )
 
@@ -371,6 +437,7 @@ def _run_spectre_remote(
                 "timings": timings,
                 "command": exec_cmd,
                 "spectre_command": spectre_command,
+                **kept,
             },
         )
     finally:
@@ -391,31 +458,34 @@ def _build_simulation_result(
     combined = (run_result.stdout or "") + "\n" + (run_result.stderr or "")
     combined_lower = combined.lower()
 
-    # Classify errors into short, actionable messages
     # "Circuit read-in complete" is normal Spectre output — only flag actual
     # read-in *errors* which contain "error reading" or "read-in failed".
     has_readin_error = (
         ("error reading" in combined_lower or "read-in failed" in combined_lower)
     )
-    if has_readin_error:
-        errors.append("netlist read error (missing include or syntax)")
-    elif "license" in combined_lower and ("error" in combined_lower or "denied" in combined_lower):
-        errors.append("license error")
-    elif _has_convergence_failure(combined):
-        errors.append("convergence failure")
-    elif "no such file" in combined_lower or "cannot open" in combined_lower:
-        errors.append("file not found")
-    elif "segmentation" in combined_lower or "core dump" in combined_lower:
-        errors.append("spectre crashed")
-    else:
-        # Fallback: collect raw error lines
-        for line in combined.splitlines():
-            stripped = line.strip()
-            if not stripped:
-                continue
-            lower = stripped.lower()
-            if "error" in lower and "0 errors" not in lower:
-                errors.append(stripped)
+    has_convergence_failure = _has_convergence_failure(combined)
+    has_crash = "segmentation fault" in combined_lower or "core dumped" in combined_lower
+    has_execution_failure = (
+        has_readin_error
+        or has_convergence_failure
+        or _has_fatal_spectre_error(combined)
+    )
+    if run_result.returncode != 0 or has_execution_failure:
+        # A category supplements the native diagnostic; never discard codes or
+        # wrapped explanations. License matching stays within each diagnostic,
+        # not between an unrelated licensing banner and a later error summary.
+        details = _spectre_error_details(combined)
+        if has_readin_error:
+            errors.append("netlist read error (missing include or syntax)")
+        if any(_has_license_failure(detail) for detail in details):
+            errors.append("license error")
+        if has_convergence_failure:
+            errors.append("convergence failure")
+        if "no such file" in combined_lower or "cannot open" in combined_lower:
+            errors.append("file not found")
+        if has_crash:
+            errors.append("spectre crashed")
+        errors.extend(details)
 
     for line in combined.splitlines():
         stripped = line.strip()
@@ -431,11 +501,6 @@ def _build_simulation_result(
         else []
     )
 
-    has_execution_failure = (
-        has_readin_error
-        or _has_convergence_failure(combined)
-        or _has_fatal_spectre_error(combined)
-    )
     if run_result.returncode != 0 or has_execution_failure:
         status = ExecutionStatus.PARTIAL if output_files else ExecutionStatus.FAILURE
         if not errors:
@@ -493,8 +558,38 @@ def _has_fatal_spectre_error(output: str) -> bool:
     return (
         "spectre terminated prematurely due to fatal error" in lower
         or "fatal error" in lower
-        or bool(re.search(r"(?m)^\s*error\s*\(", output, re.IGNORECASE))
+        or bool(_SPECTRE_DIAGNOSTIC.search(output))
     )
+
+
+def _has_license_failure(diagnostic: str) -> bool:
+    """Match a failed checkout within one diagnostic, including wrapped text."""
+    return bool(
+        re.search(r"\blicen[cs](?:e|es|ing)\b", diagnostic, re.IGNORECASE)
+        and re.search(
+            r"\b(?:error|denied|failed|failure|cannot|unavailable)\b|could not|unable to",
+            diagnostic, re.IGNORECASE,
+        )
+    )
+
+
+def _spectre_error_details(output: str) -> list[str]:
+    """Keep native diagnostics and their indented continuation lines together."""
+    details: list[str] = []
+    in_diagnostic = False
+    for line in output.splitlines():
+        stripped = line.strip()
+        if _SPECTRE_DIAGNOSTIC.match(stripped):
+            details.append(stripped)
+            in_diagnostic = True
+        elif in_diagnostic and stripped and line[0].isspace():
+            details[-1] += "\n" + line.rstrip()
+        else:
+            in_diagnostic = False
+            lower = stripped.lower()
+            if ("error" in lower and "0 errors" not in lower) or _has_license_failure(stripped):
+                details.append(stripped)
+    return details
 
 # ---------------------------------------------------------------------------
 # SpectreSimulator
@@ -581,7 +676,11 @@ class SpectrePool:
 
 
 class SpectreSimulator:
-    """Cadence Spectre simulator adapter."""
+    """Cadence Spectre simulator adapter.
+
+    ``license_queue_timeout`` sets the automatic ``+lqtimeout`` in seconds
+    (default 900); ``None`` omits it. Explicit Spectre queue arguments win.
+    """
 
     def __init__(
         self,
@@ -601,7 +700,15 @@ class SpectreSimulator:
         remote: bool = False,
         ssh_runner: SSHRunner | None = None,
         profile: str | None = None,
+        license_queue_timeout: int | None = 900,
     ) -> None:
+        if license_queue_timeout is not None and (
+            not isinstance(license_queue_timeout, int)
+            or isinstance(license_queue_timeout, bool)
+            or license_queue_timeout < 0
+        ):
+            raise ValueError("license_queue_timeout must be a nonnegative integer or None")
+        self._license_queue_timeout = license_queue_timeout
         profile = resolve_profile(profile)
         load_vb_env()
         if spectre_cmd == "spectre":
@@ -666,6 +773,7 @@ class SpectreSimulator:
         keep_remote_files: bool = False,
         ssh_runner: SSHRunner | None = None,
         profile: str | None = None,
+        license_queue_timeout: int | None = 900,
     ) -> "SpectreSimulator":
         """Create a SpectreSimulator from environment variables.
 
@@ -688,6 +796,7 @@ class SpectreSimulator:
                 output_format=output_format,
                 keep_remote_files=keep_remote_files,
                 profile=profile,
+                license_queue_timeout=license_queue_timeout,
             )
 
         if ssh_runner is None:
@@ -713,6 +822,7 @@ class SpectreSimulator:
             remote=True,
             ssh_runner=ssh_runner,
             profile=profile,
+            license_queue_timeout=license_queue_timeout,
         )
 
     @classmethod
@@ -723,6 +833,7 @@ class SpectreSimulator:
         timeout: int = 600,
         work_dir: Path | None = None,
         output_format: str | None = "psfascii",
+        license_queue_timeout: int | None = 900,
     ) -> "SpectreSimulator":
         """Create a SpectreSimulator for local execution (no SSH)."""
         return cls(
@@ -731,6 +842,7 @@ class SpectreSimulator:
             timeout=timeout,
             work_dir=work_dir,
             output_format=output_format,
+            license_queue_timeout=license_queue_timeout,
         )
 
     # -- public API ---------------------------------------------------------
@@ -867,7 +979,7 @@ class SpectreSimulator:
                     errors=[f"Task {i} failed: {exc}"],
                 ))
         passed = sum(1 for r in results if r.status == ExecutionStatus.SUCCESS)
-        print(f"[parallel] Done: {passed}/{len(results)} succeeded")
+        logger.info("[parallel] Done: %d/%d succeeded", passed, len(results))
         return results
 
     def check_license(self) -> dict[str, Any]:
@@ -875,7 +987,9 @@ class SpectreSimulator:
 
         Returns a dict with keys: ok, spectre_path, version, licenses.
         """
-        if not self._remote_host or _is_localhost(self._remote_host):
+        is_local = not self._remote_host or _is_localhost(self._remote_host)
+        environment = CadenceEnvironment.from_env(self._profile)
+        if is_local and not environment.script:
             # Local mode: check spectre directly on this machine
             info: dict[str, Any] = {
                 "ok": False,
@@ -883,20 +997,11 @@ class SpectreSimulator:
                 "version": None,
                 "licenses": [],
             }
-            spectre_path = shutil.which(self._spectre_cmd)
+            spectre_path, version = probe_spectre_locally(self._spectre_cmd)
             if spectre_path:
                 info["spectre_path"] = spectre_path
+                info["version"] = version
                 info["ok"] = True
-                try:
-                    ver = subprocess.run(
-                        [self._spectre_cmd, "-V"],
-                        capture_output=True, text=True, timeout=15,
-                    )
-                    ver_line = (ver.stdout or ver.stderr or "").strip().splitlines()
-                    if ver_line:
-                        info["version"] = ver_line[0]
-                except Exception:
-                    pass
                 try:
                     lm = subprocess.run(
                         ["lmstat", "-a"],
@@ -911,42 +1016,20 @@ class SpectreSimulator:
                 info["error"] = f"Spectre command '{self._spectre_cmd}' not found locally"
             return info
 
-        runner = self._get_ssh_runner()
+        runner = None if is_local else self._get_ssh_runner()
 
-        suffix = f"_{self._profile}" if self._profile else ""
-        spectre_bin = (
-            os.environ.get(f"VB_SPECTRE_BIN{suffix}", "").strip()
-            or os.environ.get("VB_SPECTRE_BIN", "").strip()
-        )
-
-        if spectre_bin:
-            quoted_bin = shlex.quote(spectre_bin)
-            env_setup = ""
-            path_expr = spectre_bin
-            ver_cmd = f"{quoted_bin} -V"
-        else:
-            cadence_cshrc = shlex.quote(
-                os.environ.get(f"VB_CADENCE_CSHRC{suffix}", "")
-                or os.environ.get("VB_CADENCE_CSHRC", "")
-            )
-            env_setup = (
-                'HOSTNAME=`hostname 2>/dev/null || echo localhost`; export HOSTNAME && '
-                f'export VB_CADENCE_CSHRC={cadence_cshrc} && '
-                f'eval "$(csh -c \'source {cadence_cshrc}; env\' 2>/dev/null '
-                f'| grep -E \"^(PATH|LM_LICENSE_FILE|CDS)=\" '
-                f'| sed \'s/^/export /\')" 2>/dev/null; '
-            )
-            path_expr = "$(which spectre 2>/dev/null || echo NOTFOUND)"
-            ver_cmd = "spectre -V"
-
-        check_script = (
-            f'{env_setup}'
-            f'echo "SPECTRE_PATH={path_expr}"; '
-            f'{ver_cmd} 2>&1 | head -1; '
+        # Probe what a simulation runs: the configured command (VB_SPECTRE_BIN
+        # is applied in __init__) or spectre on PATH.
+        configured = "" if self._spectre_cmd == "spectre" else self._spectre_cmd
+        check_script = environment.wrap(
+            f"{spectre_probe_script(configured)}; "
             'lmstat -a 2>/dev/null | grep -E "Users of" | grep "licenses in use" | grep -v "0 licenses in use"'
         )
 
-        result = runner.run_command(check_script, timeout=30)
+        result = (
+            subprocess.run(["sh", "-c", check_script], capture_output=True, text=True, timeout=30)
+            if runner is None else runner.run_command(check_script, timeout=30)
+        )
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
 
@@ -959,16 +1042,8 @@ class SpectreSimulator:
             "licenses": [],
         }
 
-        for line in stdout.splitlines():
-            line = line.strip()
-            if line.startswith("SPECTRE_PATH="):
-                path = line.split("=", 1)[1]
-                if path != "NOTFOUND":
-                    info["spectre_path"] = path
-            elif line.startswith("@(#)$CDS:"):
-                info["version"] = line
-            elif "Users of" in line:
-                info["licenses"].append(line)
+        info["spectre_path"], info["version"] = parse_spectre_probe(stdout)
+        info["licenses"] = [line.strip() for line in stdout.splitlines() if "Users of" in line]
 
         if info["spectre_path"]:
             info["ok"] = True
@@ -984,11 +1059,6 @@ class SpectreSimulator:
         *,
         work_dir: Path | None,
     ) -> SimulationResult:
-        suffix = f"_{self._profile}" if self._profile else ""
-        cadence_cshrc = (
-            os.environ.get(f"VB_CADENCE_CSHRC{suffix}", "").strip()
-            or os.environ.get("VB_CADENCE_CSHRC", "").strip()
-        )
         run_result = _run_spectre_local(
             netlist=netlist,
             params=params,
@@ -997,7 +1067,8 @@ class SpectreSimulator:
             timeout=self._timeout,
             work_dir=work_dir,
             output_format=self._output_format,
-            cadence_cshrc=cadence_cshrc or None,
+            cadence_env=CadenceEnvironment.from_env(self._profile),
+            license_queue_timeout=self._license_queue_timeout,
         )
         if not run_result.success:
             return SimulationResult(
@@ -1068,6 +1139,8 @@ class SpectreSimulator:
             output_format=self._output_format,
             timeout=self._timeout,
             keep_remote_files=self._keep_remote_files,
+            cadence_env=CadenceEnvironment.from_env(self._profile),
+            license_queue_timeout=self._license_queue_timeout,
         )
         if not run_result.success:
             return SimulationResult(
@@ -1085,6 +1158,8 @@ class SpectreSimulator:
                 "timings": timings,
                 "command": run_result.metadata.get("command"),
                 "spectre_command": run_result.metadata.get("spectre_command"),
+                **{key: run_result.metadata[key] for key in ("remote_dir", "remote_raw_dir")
+                   if key in run_result.metadata},
             },
         )
         timings["parse_results"] = time.perf_counter() - parse_started

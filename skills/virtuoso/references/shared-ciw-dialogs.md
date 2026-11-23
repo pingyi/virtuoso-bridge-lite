@@ -1,5 +1,9 @@
 # Shared CIW Dialog Protection
 
+The APIs below require a compatible client and running daemon. Check their
+capabilities before use; an older checkout or a skill update alone does not
+provide this protection. Without it, use manual coordination for a shared CIW.
+
 Humans and Bridge can operate the same Virtuoso process. A popup in that
 process cannot reliably be attributed to either party, even when it appears
 immediately after a Bridge request. Never automatically press Enter, Cancel,
@@ -10,10 +14,14 @@ or close the current form just to unblock automation.
 ```bash
 virtuoso-bridge inspect-dialogs --pid 12345 -p worker --json
 virtuoso-bridge inspect-dialogs --pid 12345 --display :7 --ciw-window 0x100 --json
+virtuoso-bridge inspect-dialogs -p worker --json   # PID from the running tunnel
 ```
 
-The PID is on the configured GUI host. This command uses SSH/X11 only, does
-not construct a SKILL client, and does not start/restart the Bridge. It may
+The PID is on the configured GUI host. Without `--pid`, it is the Virtuoso PID
+that the running tunnel's daemon proves in its authenticated handshake: no
+SKILL is sent, so a blocked CIW still answers. Without a running tunnel, or
+with the GUI and daemon on different hosts, pass `--pid`. This command uses
+SSH/X11 only, sends no SKILL, and does not start/restart the Bridge. It may
 deploy a small content-addressed inspection helper to the profile scratch
 directory. Subsequent inspections reuse that helper within the same runner.
 
@@ -67,7 +75,11 @@ For a genuinely local GUI with no SSH runner, explicitly pass `local_gui=True`.
 A loopback TCP endpoint alone is not local-GUI evidence: it can be an SSH tunnel.
 
 Every guarded SKILL request receives a read-only preflight and fresh authenticated
-PID handshake, so a tunnel redirected to another CIW is refused. A non-clear
+PID handshake, so a tunnel redirected to another CIW is refused. Both checks run
+side by side and both must pass before anything is sent. With
+`protect_inflight=True`, a daemon loaded from this version replies to a quick
+request with its result instead of "running", saving the receipt round trip;
+an older daemon still works and is polled as before. A non-clear
 report returns the existing `VirtuosoResult(status=ERROR)` shape with
 `metadata.request_sent=False`, `outcome="not_started"`, and `dialog_guard`.
 No SKILL is sent. Protection is per client, not a desktop lock or process-wide
@@ -94,6 +106,58 @@ the user resolves the dialog, inspect/read that history rather than invoking
 
 `client.dialogs.inspect(pid=12345)` is also available without enabling a guard.
 `client.dialogs.disable_guard()` removes protection without closing any window.
+
+## Dialogs Your Own Calls Would Open
+
+Some calls open a modal dialog that blocks the CIW. These helpers handle
+known save prompts before the operation:
+
+- `client.close_windows(lib, cell, view)` closes matching cellview windows.
+  If any of their cellviews has unsaved changes, it closes nothing and names
+  them (`unsaved="refuse"`, the default), saves them first
+  (`unsaved="save"`), or discards them when explicitly requested
+  (`unsaved="discard"`). Saving must leave each cellview unmodified before
+  windows can close. Discard uses `dbPurge`: database handles become invalid
+  and undo checkpoints for earlier edits, including other cellviews, are cleared.
+  A window that an earlier close already
+  took away (a linked Layout XL window) is skipped.
+- XStream export refuses while the exported library has unsaved open
+  cellviews, naming them, instead of opening "Save All". Save explicitly,
+  then export.
+
+To exit an explicitly selected CIW, choose how to handle display resources:
+
+```python
+# Only when the user has authorized closing this Virtuoso and saving its edits.
+result = client.request_exit(
+    unsaved="save", display_resources="save",
+    display_path="/absolute/path/on/gui/host/display.drf",
+)
+print(result.metadata["exit_state"])
+```
+
+`request_exit` requires `display_resources="save"` with a path on the GUI host,
+or explicit `display_resources="discard"`. The latter discards in-memory display
+resource changes when exit completes. Cellviews default to `unsaved="refuse"`;
+`save` and `discard` apply to **all** open cellviews, including non-window
+handles. Discarding edits or exiting a shared CIW requires the user's intent,
+not merely an agent's desire to unblock work. These options do not dismiss
+an already-open dialog.
+
+The helper queues one callback, rechecks unsaved cellviews, applies the chosen
+policy, and calls ordinary `exit()` with Cadence's display-resource save prompt
+temporarily suppressed (`layout` / `drmSuppressSaveDialogBox`). Native exit hooks still
+run and may cancel or block exit. If exit returns, the prior setting is restored.
+Saving/discarding happens before those hooks; it is not rolled back on a later
+error or cancelled exit. This does not bypass other application-specific prompts.
+
+`metadata.exit_state="requested"` acknowledges the queued callback, not process
+termination or successful saving. `not_started` means the request was known not
+to have been sent; otherwise a failed submission is `unknown`. Keep the original
+result/receipt evidence and verify process state separately. Both `close_windows`
+and `request_exit` disable connection retries; an uncertain result must be
+reconciled before any new attempt. The helpers were verified on IC 23.1 with
+isolated CIWs; this is not evidence for every application hook or IC version.
 
 ## Requests That Open A Popup
 
@@ -148,13 +212,53 @@ daemon or sending a SKILL probe. Never log the credential.
 it is not proof of higher-level design or simulation acceptance. `running` or
 `unknown` never grants permission to resubmit. A missing submission
 acknowledgement is unknown too, with `request_sent=None`, not not-started.
-Only an authenticated submission refusal reports `outcome="not_started"`.
+After transmission is attempted, only an authenticated submission refusal
+establishes `outcome="not_started"`. A local preflight or deadline that stops
+before transmission also establishes that the request was not started.
 
 Maestro writer errors retain the handle in `RequestRecoveryError.handle` and
 the full `VirtuosoResult` in `.result`. `run_and_wait()` retains its session and
 completion marker when startup is uncertain. A recovered run-history response
 must be reconciled with that original marker/history, not used to start a
 second simulation. Querying a receipt does not resume a multi-step workflow.
+
+Simulation start errors also retain this context when they are
+`DialogBlockedError` or ordinary transport errors. With the guard enabled,
+missing dialog evidence is inspected once within the remaining budget (at most
+five seconds). Existing evidence and exception types are preserved;
+unguarded calls do not gain X11 inspection. Completion-poll transport failures
+likewise retain the acknowledged history and marker, with guard evidence when
+available. A confirmed unsent request remains `not_started`.
+
+Ordinary start transport exceptions keep their original type and instance,
+with added context in `.result.metadata`. If a third-party exception already
+owns an unrelated `.result`, context is attached as `.virtuoso_result` instead.
+Generic completion-poll failures still raise `MaestroCompletionUnknown`, which
+remains catchable as `TimeoutError`, even when diagnostic inspection finds a
+dialog. An existing `DialogBlockedError` or `RequestRecoveryError` keeps its
+original exception identity and recovery handle.
+Diagnostic attachment is best effort for custom exceptions that prohibit
+new attributes; a failed attachment does not replace the original exception.
+
+`MaestroJob.request_evidence["dialog_guard"]`, when present, records the
+inspection captured at submission failure. It survives receipt reconciliation
+as historical evidence, not a fresh claim that the CIW is still blocked.
+`status()` remains an out-of-band job observation; no new blocked job state or
+automatic resubmission is introduced.
+
+X11 helper deployment stays lazy. Directory creation, upload and remote
+readability are checked before a helper is used or cached. Missing cached
+helpers are redeployed before execution, including both files needed by the
+reviewed-close helper. Checked deployment failures in inspection and reviewed
+close raise `X11HelperDeploymentError` (a `RuntimeError` subclass), with `stage`,
+`local_helper`, `remote_target`, `returncode` and `stderr`. Legacy list-returning
+X11 APIs keep their list of error dictionaries, adding these details under
+`helper_deployment`. Raised transport exceptions keep their type and instance,
+with details attached as `.helper_deployment`. Legacy helper preparation keeps
+the runner's configured timeout defaults; budgeted inspection and close calls
+continue to use their remaining timeout.
+Checking or repairing a helper does not repeat an X11 action whose outcome is
+uncertain.
 
 Receipts are in-memory and bounded, not a durable job database. A daemon
 restart, lost IPC pipe, malformed response, receipt expiry or unavailable
@@ -167,8 +271,26 @@ Finished receipts are retained for one hour with a maximum of 4096 entries,
 space for a worst-case response before accepting another execution and refuses
 at capacity, rather than evicting young receipts. A pending request never
 expires or releases the IPC lane merely because its client stops waiting.
-Malformed/partial responses, EOF or legacy timeout poison the lane: later
-execution is refused because a delayed frame could otherwise be misattributed.
+Malformed/partial responses or a legacy timeout poison the lane: later
+execution is refused (`BusyError: IPC lane is poisoned …`) because a delayed
+frame could otherwise be misattributed. The daemon then sends a resync probe
+and discards everything Virtuoso writes until the probe's own reply arrives,
+and the lane is usable again without reloading the bridge. The lane stays
+poisoned while the CIW is still blocked, and permanently if the pipe closes.
+`virtuoso-bridge status` shows the lane state (`busy`, `resyncing`,
+`poisoned`) from the handshake, which does not use the CIW.
+
+Replies are also attributed by tag, not only by order: the bridge tags each
+request, the CIW handler echoes the tag after the status marker, and the
+daemon drops every reply that is not its own. Replies were once observed one
+request behind after a request blocked behind a modal dialog; on IC 23.1 the
+modal dialogs tried (an application dialog box, Layout XL's LX-2063 warning,
+XStream's "Save All") answer nothing until dismissed and then reply in order,
+so the source of that extra reply is unknown, and tags drop a stray reply
+whatever its origin. A timed-out request's temp file is kept until its own
+late reply arrives (at most one hour). The handshake reports `reply_tags: 1`.
+A daemon started by an older `ramic_bridge.il` relies on in-order replies;
+restart the bridge from the updated setup to get tags.
 
 Request IDs contain a millisecond creation timestamp and random suffix. New
 submissions must be no more than five minutes old or thirty seconds in the
@@ -182,10 +304,88 @@ exactly-once execution across crashes or arbitrary clock changes.
 
 ## Explicit Recovery And Compatibility
 
+### Reviewed Informational Close (Opt-in)
+
+For an informational dialog whose Close behavior has been independently verified,
+the API provides a two-step, single-use close. This is not generic popup approval:
+save/discard/overwrite, SOS, simulation start/cancel and unknown workflows remain
+outside this feature. Do not decide safety from the title or pixel hash alone.
+
+```python
+# Existing authenticated client; avoid factory SKILL probes while blocked.
+client.dialogs.enable_guard(pid=verified_pid)
+ticket = client.dialogs.prepare_close(
+    inspected_window_id, expected_title="Exact reviewed informational title",
+)
+# Review ticket.preview_png_b64 and the documented Close behavior, or match an
+# independently reviewed exact visual whitelist. Do NOT blindly approve every
+# hash returned by the API. Preview images can contain confidential text.
+result = client.dialogs.close(
+    ticket, authorized=True, expected_content_sha256=approved_content_hash,
+)
+```
+
+`prepare_close` only reads the target and preview. `close` defaults to unauthorized
+and consumes a ticket before transport. Tickets are client-local, expire after
+120 seconds, cannot be modified/replayed, and are limited to 16 outstanding
+previews. Rebinding to a different endpoint or CIW invalidates approval. The
+signed hello must match the selected PID; the native helper binds its process
+start time to reject PID reuse. Older authenticated daemons need no protocol
+upgrade for this API. When advertised, daemon-instance changes also invalidate
+approval; an older daemon's restart within the same CIW is not separately detected.
+
+The remote helper rechecks the one target-owned modal, exact window/title,
+process start identity, geometry, WM metadata and visible pixels. It requires
+WM_DELETE_WINDOW support and sends that message to the selected window once.
+There is no Enter/escape/global keyboard input, focus stealing, window destruction,
+process kill, or fallback when a window does not support the protocol. A changed,
+unmapped, ambiguous or unrecognized target is refused. No SKILL is used.
+
+Being mapped/viewable is not sufficient for a reliable image. Each capture
+checks the complete target rectangle against root/ancestor clipping and higher
+siblings in native stacking order, including their borders. Obscured/off-screen
+pixels, shaped target/ancestor windows, mixed-depth visible inferiors, absent
+libXext/SHAPE support, or a visibility scan exceeding its bounds are refused.
+The target must use a TrueColor visual; visible InputOutput inferiors must share
+that exact visual. Visual identity and RGB masks are bound into the snapshot.
+Mutable colormaps can change displayed colors without changing pixel indices,
+so DirectColor and other unsupported visuals are refused rather than guessed.
+The helper does not raise, focus, or uncover a window to obtain approval.
+This is intentionally conservative, including shaped window-manager frames.
+XGetImage can return undefined obscured or differently-deep inferior pixels;
+see the [Xlib image specification](https://www.x.org/releases/current/doc/libX11/libX11/libX11.html#XGetImage).
+
+A short X-server grab protects each visibility check and capture, and the final
+native comparison and message submission. Visibility is rechecked under the final
+grab; preview PNG encoding happens after the capture grab is released. No
+subprocess runs while grabbed. A helper-local hard deadline prevents a hung
+native call from holding the grab indefinitely. This briefly pauses the display;
+it is not a desktop reservation or protection against every client-side race.
+
+Results distinguish `not_started` (`action_sent=false`), `requested`, `closed`,
+and `unknown`. A requested message is NOT proof that the window closed. A separate
+native query checks the ticket's exact display, process instance and window ID.
+Only confirmed destruction (BadWindow) or unmapping yields `closed`; a mapped
+window, even with an unmapped ancestor, or an unavailable/malformed query stays
+`requested` without resending. A general inspection reporting `clear` is not
+used as closure evidence. The result's optional `inspection` field contains this
+exact-window state report (`status=window_state`, `exists`, `mapped`, target/XID),
+not a general dialog inventory. A closed
+window is NOT proof that a design/save/run operation succeeded. Query the original
+request receipt separately when using the recoverable-request feature. Unknown
+transport outcomes never trigger automatic repeat; inspect and reconcile instead.
+
+First release is an explicit reviewed-close API, not a built-in catalog of Cadence
+dialogs, a persistent automatic click policy, or a CLI that transports approval
+tickets between processes. Rendering differences, obscured windows, animation and
+button highlighting can invalidate a visual match; refusal is intentional.
+
 Let the user complete their dialog whenever its provenance is unknown.
-An explicitly authorized window/action can use `dismiss-window --display DISPLAY`;
-the exact `target.display` from inspection is required for this workflow, since
-window IDs are not unique across displays. Confirm the window still represents
+An explicitly authorized window/action can use `dismiss-window --pid PID` (or
+`--display DISPLAY` with the exact `target.display` from inspection); one of them is
+required for this workflow, since window IDs are not unique across displays. Both
+connect with the Xauthority cookie of the Virtuoso process on that display, which
+`xvfb-run`/`cdsXvfb-run` sessions need; the action never moves to another display. Confirm the window still represents
 the intended dialog before invoking it. Sending a key
 is not proof that the underlying save or simulation succeeded.
 
@@ -211,10 +411,11 @@ dismissal while its shared guard is enabled. Existing explicitly selected
   each call, but an individual synchronous call can outlive the helper's budget.
   X server I/O loss can terminate the helper. Failed/malformed inspection is
   indeterminate, not clear; invisible input grabs are not detected.
-- Legacy execution, including preflight-only mode, still uses the process-level
-  SIGINT watchdog. Only explicit recoverable execution avoids it. Human actions,
-  another daemon in the same Virtuoso process, or external tools may still
-  interrupt the operation; this is not a process-wide safety guarantee.
+- Neither legacy nor recoverable execution signals Virtuoso: a legacy request
+  that outlives its timeout keeps running, its client gets a timeout, and the
+  lane resynchronizes once Virtuoso answers. Human actions, another daemon in
+  the same Virtuoso process, or external tools may still interrupt the
+  operation; this is not a process-wide safety guarantee.
 - Existing client factory identity checks, and other clients using the same
   CIW, are not protected before this guard is enabled.
 - No background polling, automatic saving, notification scheduler, or generic

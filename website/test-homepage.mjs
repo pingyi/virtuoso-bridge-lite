@@ -1,0 +1,139 @@
+/** Browser regression: node test-homepage.mjs [site URL] [screenshot directory]. */
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
+
+const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_MODULE_PATH ?? "playwright");
+const base = new URL(process.argv[2] ?? "http://127.0.0.1:8767");
+const screenshots = process.argv[3];
+if (screenshots) await mkdir(screenshots, { recursive: true });
+const browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || undefined });
+const errors = [];
+
+async function context(options = {}) {
+  const result = await browser.newContext({
+    reducedMotion: "reduce", extraHTTPHeaders: { DNT: "1", "Sec-GPC": "1" }, ...options,
+  });
+  await result.addInitScript(() => Object.defineProperty(navigator, "doNotTrack", { get: () => "1" }));
+  await result.route("**/*", route => {
+    const url = new URL(route.request().url());
+    if (url.origin !== base.origin) return route.abort();
+    if (url.pathname.startsWith("/api/track")) return route.fulfill({ status: 204 });
+    return route.continue();
+  });
+  result.on("page", page => page.on("pageerror", error => errors.push(error.message)));
+  return result;
+}
+
+try {
+  const active = await context();
+  const page = await active.newPage();
+  for (const lang of ["en", "zh"]) {
+    for (const width of [1440, 1280, 1024, 768, 640, 390, 320]) {
+      const label = lang + " / " + width;
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(new URL("/?lang=" + lang, base).href, { waitUntil: "networkidle" });
+      await page.locator('#ecosystem').scrollIntoViewIfNeeded();
+      await page.locator(".archive").waitFor({ state: "visible" });
+      await page.evaluate(()=>scrollTo({top:0,behavior:'instant'}));
+      const metrics = await page.evaluate(() => {
+        const primary = document.querySelector(".intro .primary");
+        const guide = document.querySelector("#docs .links a");
+        return {
+          overflow: document.documentElement.scrollWidth > innerWidth + 1,
+          header: document.querySelector(".site-header").getBoundingClientRect().height,
+          ctaFont: parseFloat(getComputedStyle(primary).fontSize),
+          ctaBottom: primary.getBoundingClientRect().bottom,
+          headingWeight: Number(getComputedStyle(document.querySelector(".intro h1")).fontWeight),
+          descriptionFont: parseFloat(getComputedStyle(document.querySelector(".hero-summary")).fontSize),
+          guideFont: getComputedStyle(guide).fontSize,
+          guideZhFont: getComputedStyle(guide.querySelector(".zh")).fontSize,
+          guideColor: getComputedStyle(guide).color,
+          guideZhColor: getComputedStyle(guide.querySelector(".zh")).color,
+          start: document.querySelector("#start").getBoundingClientRect().top + scrollY,
+          comparisonBottom: document.querySelector("#skillbridge").getBoundingClientRect().bottom + scrollY,
+          comparisonCell: getComputedStyle(document.querySelector(".file-value")).display,
+          sectionHeadingSizes: [...document.querySelectorAll('#skillbridge>h2,#start>h2,#docs>h2,.ecosystem-heading h2,#architecture>h2,#cite>h2')].map(el => getComputedStyle(el).fontSize),
+          diagramLoaded: document.querySelectorAll(".hero-flow svg .system-routes path").length > 0,
+          diagramCaptionVisible: document.querySelector('.diagram-footer:last-child').getBoundingClientRect().bottom <= document.querySelector('.intro-stage').getBoundingClientRect().bottom,
+          interfaceFonts: [...new Set([...document.querySelectorAll('.hero-flow .interface-label,.hero-flow .system-caption')].map(e => {const s=getComputedStyle(e); return `${s.fontSize}/${s.fontWeight}/${s.letterSpacing}`;}))],
+        };
+      });
+      assert(!metrics.overflow, "Page overflow: " + label);
+      assert(metrics.header < 60, "Header consumes the first screen: " + label);
+      assert(metrics.ctaFont >= 13, "Tiny primary action: " + label);
+      assert(metrics.ctaBottom < 900, "Primary action below first screen: " + label);
+      assert(metrics.headingWeight >= 700, "Weak heading: " + label);
+      assert(metrics.descriptionFont >= 14, "Small body text: " + label);
+      assert.equal(metrics.guideZhFont, metrics.guideFont, "Chinese link font: " + label);
+      assert.equal(metrics.guideZhColor, metrics.guideColor, "Chinese link contrast: " + label);
+      assert(metrics.diagramLoaded, "Missing bridge signal diagram: " + label);
+      assert(metrics.diagramCaptionVisible, "Non-live diagram caption clipped: " + label);
+      assert.equal(metrics.interfaceFonts.length, 1, "Interface labels must share typography: " + label);
+      assert.equal(metrics.sectionHeadingSizes.length, 6, "All section headings exist: " + label);
+      assert.equal(new Set(metrics.sectionHeadingSizes).size, 1, "Section heading sizes must match: " + label);
+      assert(metrics.start >= metrics.comparisonBottom, "Quick start overlaps comparison: " + label);
+      if (width <= 640) assert.equal(metrics.comparisonCell, "block", "Mobile comparison: " + label);
+      assert.equal(await page.locator("[data-original] .wf-record").count(), 53, label);
+      assert.equal(await page.locator("#categories a").count(), 5, label);
+      if (screenshots && [1440, 390].includes(width)) {
+        await page.screenshot({ path: join(screenshots, lang + "-" + width + "-first-screen.png") });
+        await page.locator("#ecosystem").screenshot({ path: join(screenshots, lang + "-" + width + "-ecosystem.png") });
+        await page.locator("#start").screenshot({ path: join(screenshots, lang + "-" + width + "-quick-start.png") });
+      }
+      console.log(label, JSON.stringify(metrics));
+    }
+  }
+
+  const visibleProjects = page.locator("[data-original] .wf-record");
+  assert.equal(await page.locator('#search,#search-status,#index-clear').count(), 0);
+  assert.equal(await page.locator('#categories a').count(), 5);
+  await page.locator('[data-language-toggle]').click();
+  await page.waitForFunction(() => document.documentElement.dataset.lang === 'en');
+  assert.equal(await visibleProjects.count(), 53);
+  await page.locator('#categories a[href="#eco-tools"]').click();
+  assert.equal(await visibleProjects.count(), 53);
+  assert.equal(await page.locator('#eco-tools').isVisible(), true);
+  assert.equal(new URL(page.url()).hash, '#eco-tools');
+  await page.locator('#categories a[href="#eco-agents"]').focus();
+  await page.keyboard.press('Enter');
+  assert.equal(new URL(page.url()).hash, '#eco-agents');
+  await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', {
+    configurable: true, value: {writeText: async text => {window.copiedCitation = text;}},
+  }));
+  await page.locator('#cite [data-copy]').click();
+  assert.equal(await page.evaluate(() => window.copiedCitation), await page.locator('#guide-code-4').textContent().then(text => text.trim()), 'Moved BibTeX remains copyable');
+  for (const lang of ['en', 'zh']) {
+    for (const id of ['architecture', 'cite']) {
+      await page.goto(new URL(`/guide/?lang=${lang}#${id}`, base).href);
+      await page.waitForURL(new URL(`/?lang=${lang}#${id}`, base).href);
+      assert.equal(await page.locator('html').getAttribute('data-lang'), lang);
+      assert(await page.locator(`#${id}`).isVisible(), 'Old guide anchors lead to the moved section');
+    }
+  }
+  await active.close();
+
+  const plain = await context({ javaScriptEnabled: false, viewport: { width: 390, height: 844 } });
+  const noJs = await plain.newPage();
+  await noJs.goto(base.href);
+  assert.equal(await noJs.locator("[data-original] .wf-record").count(), 53);
+  assert.equal(await noJs.locator("#categories a:visible").count(), 5);
+  assert.equal(await noJs.locator("#eco-search-controls").count(), 0);
+  assert.equal(await noJs.locator(".intro .primary").isVisible(), true);
+  assert.equal(await noJs.locator(".archive").isVisible(), true);
+  await plain.close();
+
+  const blocked = await context();
+  await blocked.route("**/assets/home/archive.mjs*", route => route.abort());
+  const withoutModule = await blocked.newPage();
+  await withoutModule.goto(base.href);
+  assert.equal(await withoutModule.locator("[data-original] .wf-record").count(), 53);
+  assert.equal(await withoutModule.locator("#eco-search-controls").count(), 0);
+  assert.equal(await withoutModule.locator(".archive").isVisible(), true);
+  await blocked.close();
+  assert.deepEqual(errors, []);
+  console.log("PASS: 14 responsive/language layouts; complete project wall, categories, keyboard, language switch and no-script fallbacks.");
+} finally {
+  await browser.close();
+}

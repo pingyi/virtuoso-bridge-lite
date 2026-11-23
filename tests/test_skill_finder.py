@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import virtuoso_bridge
+from virtuoso_bridge import cli
 from virtuoso_bridge.cli import main
 from virtuoso_bridge.transport.ssh import CommandResult
 from virtuoso_bridge.virtuoso.basic.bridge import VirtuosoClient
@@ -13,9 +13,19 @@ from virtuoso_bridge.virtuoso.skill_finder import SKILLFinder
 class _FakeSkillClient:
     def __init__(self) -> None:
         self.find_calls: list[tuple[str, str, int, bool]] = []
+        self.missing_ok: list[bool] = []
 
-    def find_skill(self, query: str, *, mode: str = "fuzzy", limit: int = 50, include_desc: bool = False):
+    def find_skill(
+        self,
+        query: str,
+        *,
+        mode: str = "fuzzy",
+        limit: int = 50,
+        include_desc: bool = False,
+        missing_ok: bool = True,
+    ):
         self.find_calls.append((query, mode, limit, include_desc))
+        self.missing_ok.append(missing_ok)
         return [
             {
                 "name": "dbOpenCellViewByType",
@@ -25,7 +35,8 @@ class _FakeSkillClient:
             }
         ]
 
-    def get_skill_more_info(self, func_name: str):
+    def get_skill_more_info(self, func_name: str, *, missing_ok: bool = True):
+        self.missing_ok.append(missing_ok)
         return {
             "func_name": func_name,
             "file_path": "$database/db.html",
@@ -45,7 +56,11 @@ def _patch_cli_client(monkeypatch):
             seen_profiles.append(profile)
             return fake
 
-    monkeypatch.setattr(virtuoso_bridge, "VirtuosoClient", _FakeVirtuosoClient)
+    # Documentation commands build their client without the daemon.
+    monkeypatch.setattr(
+        "virtuoso_bridge.cli._docs_client",
+        lambda: _FakeVirtuosoClient.from_env(profile=cli._get_cli_profile()),
+    )
     monkeypatch.setattr("virtuoso_bridge.cli._load_cli_env", lambda: None)
     monkeypatch.setattr("virtuoso_bridge.profile.resolve_profile", lambda explicit=None: explicit)
     return fake, seen_profiles
@@ -58,6 +73,8 @@ def test_skill_find_json_flag_emits_json(capsys, monkeypatch):
 
     assert rc == 0
     assert fake.find_calls == [("dbOpen", "prefix", 3, False)]
+    # The CLI asks for an error, not [], when no Finder data exists.
+    assert fake.missing_ok == [False]
     assert seen_profiles == [None]
     parsed = json.loads(capsys.readouterr().out)
     assert parsed[0]["name"] == "dbOpenCellViewByType"

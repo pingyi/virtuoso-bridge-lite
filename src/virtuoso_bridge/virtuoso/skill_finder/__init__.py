@@ -30,6 +30,10 @@ from typing import Literal
 from .parser import SkillEntry, parse_fnd_directory
 
 
+class SKILLFinderNotFoundError(LookupError):
+    """No SKILL Finder data (``doc/finder/SKILL``) could be located."""
+
+
 class SearchMode(enum.Enum):
     """Supported search modes for SKILL Finder queries."""
 
@@ -115,21 +119,9 @@ class SKILLFinder:
         use ``which virtuoso`` to locate the binary, then walk up its parent
         directories to find ``doc/finder/SKILL``.
         """
-        # 1. Source cshrc in csh to load Cadence env, then find virtuoso.
-        # If VB_CADENCE_CSHRC is empty the source command is a no-op (silent
-        # failure), which is fine — we still run ``which virtuoso`` afterwards.
-        suffix = f"_{profile}" if profile else ""
-        cadence_cshrc = os.environ.get(
-            f"VB_CADENCE_CSHRC{suffix}", ""
-        ) or os.environ.get("VB_CADENCE_CSHRC", "")
-        quoted_cshrc = shlex.quote(cadence_cshrc)
+        from virtuoso_bridge.cadence_env import CadenceEnvironment
 
-        find_virtuoso_script = (
-            'HOSTNAME=`hostname 2>/dev/null || echo localhost`; '
-            'export HOSTNAME; '
-            f'eval "$(csh -c \'source {quoted_cshrc}; env\' 2>/dev/null '
-            f'| grep -E "^(PATH|LM_LICENSE_FILE|CDS)=" '
-            f'| sed \'s/^/export /\')" 2>/dev/null; '
+        find_virtuoso_script = CadenceEnvironment.from_env(profile).wrap(
             'which virtuoso 2>/dev/null || echo NOTFOUND'
         )
         r = runner.run_command(find_virtuoso_script, timeout=30)
@@ -139,8 +131,26 @@ class SKILLFinder:
         virtuoso_path = r.stdout.strip()
 
         # 2. Walk up from virtuoso to find doc/finder/SKILL.
+        return self._walk_up_remote(runner, virtuoso_path)
+
+    def discover_from_install_root(self, remote_runner, install_root: str) -> Path | None:
+        """Find the SKILL Finder directory from a Cadence install root.
+
+        Fallback for sites whose non-interactive shells cannot run ``which
+        virtuoso`` (Cadence tools only reachable through site wrapper
+        commands): *install_root* is what a running Virtuoso reports from
+        ``cdsGetInstPath()``. The walk-up of :meth:`discover` starts at the
+        install root instead of the binary, so
+        ``<install_root>/doc/finder/SKILL`` is checked first, then the
+        parents. Only directories that exist on the remote host are returned.
+        """
+        return self._walk_up_remote(remote_runner, install_root)
+
+    @staticmethod
+    def _walk_up_remote(runner, start: str) -> Path | None:
+        """Walk from remote path *start* up to ``/``, looking for ``doc/finder/SKILL``."""
         walk_script = (
-            f'p="{virtuoso_path}"; '
+            f'p={shlex.quote(start)}; '
             'while [ -n "$p" ] && [ "$p" != "/" ]; do '
             '  if [ -d "$p/doc/finder/SKILL" ]; then echo "$p/doc/finder/SKILL"; exit 0; fi; '
             '  p=$(dirname "$p"); '

@@ -26,6 +26,8 @@ DEFAULT_MAX_FRAME_BYTES = 8 * 1024 * 1024
 DEFAULT_MAX_CACHE_BYTES = 32 * 1024 * 1024
 SUBMIT_MAX_PAST_MS = 300000
 SUBMIT_MAX_FUTURE_MS = 30000
+# Longest a submit reply waits for its request to finish (client asks wait_ms).
+MAX_SUBMIT_WAIT_SECONDS = 2.0
 _LOWER_HEX = set("0123456789abcdef")
 
 
@@ -111,6 +113,162 @@ def read_response_frame(read_one, max_frame_bytes=DEFAULT_MAX_FRAME_BYTES):
             raise ExecutionUncertain("Virtuoso response frame exceeds the size limit")
 
 
+def resynchronize(send, read_one):
+    """Send a probe and discard the IPC stream up to the probe's own reply.
+
+    Virtuoso evaluates requests in order, so once the reply to a fresh probe
+    has been read, every earlier byte (the late reply of a timed-out request,
+    the rest of a half-read frame) has been consumed and the next request's
+    reply is attributable again. ``send`` writes one SKILL expression;
+    ``read_one`` behaves as for ``read_response_frame``. Returns False if the
+    pipe closes first. Waits as long as Virtuoso does not answer: the lane
+    stays poisoned meanwhile.
+    """
+    probe = '"vb-resync-%s"' % random_instance_id()
+    marker = _as_bytes(probe) + b"\x1e"
+    send(probe)
+    window = b""
+    while True:
+        try:
+            chunk = read_one()
+        except IOError as exc:
+            if getattr(exc, "errno", None) not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                return False
+            chunk = None
+        if chunk is None:
+            time.sleep(0.001)
+            continue
+        chunk = _as_bytes(chunk)
+        if not chunk:
+            return False
+        window = (window + chunk)[-len(marker):]
+        if window == marker:
+            return True
+
+
+# Reply tags. Attribution by position needs exactly one reply per request,
+# in request order. After a request blocked behind a modal dialog, every
+# later reply was once observed one request behind (#274); the source of the
+# extra frame was not identified (the modal dialogs tried on IC 23.1 answered
+# nothing until dismissed, then replied in order). When the CIW handler
+# supports it (RB_REPLY_TAGS=1 in the daemon's environment), each request is
+# sent as "vbtag:<tag> <code>" and the handler echoes <tag> right after the
+# status marker; the daemon reads frames until its own tag comes back, so a
+# frame of any other origin is dropped instead of shifting the replies.
+REPLY_TAG_LEN = 16
+REPLY_TAG_PREFIX = "vbtag:"
+
+
+def new_reply_tag():
+    return random_instance_id()[:REPLY_TAG_LEN]
+
+
+def frame_tag(frame):
+    """The reply tag of a STX/NAK frame, or None if it carries none."""
+    frame = _as_bytes(frame)
+    candidate = frame[1:1 + REPLY_TAG_LEN]
+    if len(candidate) != REPLY_TAG_LEN:
+        return None
+    if not isinstance(candidate, str):
+        try:
+            candidate = candidate.decode("ascii")
+        except UnicodeDecodeError:
+            return None
+    if all(ch in _LOWER_HEX for ch in candidate):
+        return candidate
+    return None
+
+
+def strip_reply_tag(frame, tag):
+    """The frame without its tag if it answers *tag*, else None."""
+    frame = _as_bytes(frame)
+    if frame_tag(frame) != tag:
+        return None
+    return frame[:1] + frame[1 + REPLY_TAG_LEN:]
+
+
+class DeferredFiles(object):
+    """Temp files of requests whose reply was not read.
+
+    Virtuoso may still load() such a file once the CIW is unblocked. Without
+    reply tags a file is released when the lane resynchronizes. With tags no
+    ordering is assumed, so a file is kept until its own late reply has been
+    seen, or until it is older than ``ttl_seconds`` or more than
+    ``max_files`` are waiting.
+    """
+
+    def __init__(self, ttl_seconds=DEFAULT_TTL_SECONDS, max_files=256, clock=None):
+        self.ttl_seconds = float(ttl_seconds)
+        self.max_files = int(max_files)
+        self._clock = clock or time.time
+        self._lock = threading.Lock()
+        self._untagged = []
+        self._tagged = {}
+        self._order = []
+        self._window = b""
+
+    def paths(self):
+        with self._lock:
+            return list(self._untagged) + [self._tagged[tag][0] for tag in self._order]
+
+    def add(self, path, tag=None):
+        with self._lock:
+            if tag is None:
+                self._untagged.append(path)
+                return
+            self._tagged[tag] = (path, self._clock())
+            self._order.append(tag)
+            doomed = self._expire_locked()
+        _unlink_all(doomed)
+
+    def _expire_locked(self):
+        doomed = []
+        now = self._clock()
+        while self._order:
+            tag = self._order[0]
+            added = self._tagged[tag][1]
+            if len(self._order) <= self.max_files and now - added < self.ttl_seconds:
+                break
+            self._order.pop(0)
+            doomed.append(self._tagged.pop(tag)[0])
+        return doomed
+
+    def release(self, tag):
+        """The reply of *tag* has arrived, so its load() is over."""
+        if tag is None:
+            return
+        with self._lock:
+            entry = self._tagged.pop(tag, None)
+            if entry is not None:
+                self._order.remove(tag)
+        if entry is not None:
+            _unlink_all([entry[0]])
+
+    def release_untagged(self):
+        with self._lock:
+            doomed = self._untagged
+            self._untagged = []
+        _unlink_all(doomed)
+
+    def observe(self, chunk):
+        """Watch raw pipe bytes (the resync scan) for a tagged late reply."""
+        with self._lock:
+            if not self._tagged:
+                return
+            window = (self._window + _as_bytes(chunk))[-(REPLY_TAG_LEN + 1):]
+            self._window = window
+        if len(window) == REPLY_TAG_LEN + 1 and window[:1] in (b"\x02", b"\x15"):
+            self.release(frame_tag(window))
+
+
+def _unlink_all(paths):
+    for path in paths:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
 class RecoverableRequestManager(object):
     """Serialize legacy/recoverable SKILL and retain bounded receipts."""
 
@@ -134,15 +292,81 @@ class RecoverableRequestManager(object):
         self._clock = clock or time.time
         self._thread_factory = thread_factory or threading.Thread
         self._lock = threading.RLock()
+        # Notified whenever a running request finishes (see wait()).
+        self._finished = threading.Condition(self._lock)
         self._entries = {}
         self._cached_bytes = 0
         self._lane_owner = None
+        self._lane_since = None
         self._poisoned = None
+        self._poisoned_at = None
+        self._resync = None
+        self._resyncing = False
 
     @property
     def poisoned(self):
         with self._lock:
             return self._poisoned
+
+    def set_resync(self, resync):
+        """Register ``resync()``, run on a worker thread whenever the lane is
+        poisoned; a true result clears the poison."""
+        self._resync = resync
+
+    def _poison_locked(self, diagnostic):
+        if self._poisoned:
+            return
+        self._poisoned = diagnostic
+        self._poisoned_at = self._clock()
+        if self._resync is None:
+            return
+        try:
+            worker = self._thread_factory(
+                target=self._run_resync, args=(diagnostic,), name="ramic-lane-resync",
+            )
+            worker.daemon = True
+            worker.start()
+            self._resyncing = True
+        except Exception:
+            self._resyncing = False
+
+    def _run_resync(self, diagnostic):
+        try:
+            synced = bool(self._resync())
+        except Exception:
+            synced = False
+        with self._lock:
+            self._resyncing = False
+            if synced and self._poisoned == diagnostic:
+                self._poisoned = None
+                self._poisoned_at = None
+
+    def _poisoned_message_locked(self):
+        message = "IPC lane is poisoned: %s" % self._poisoned
+        if self._resyncing:
+            message += "; waiting for Virtuoso to answer a resync probe"
+        return message
+
+    def _take_lane_locked(self, owner):
+        self._lane_owner = owner
+        self._lane_since = self._clock()
+
+    def lane_state(self):
+        """JSON-ready lane state for the capability handshake."""
+        with self._lock:
+            if self._poisoned:
+                return {
+                    "state": "resyncing" if self._resyncing else "poisoned",
+                    "detail": self._poisoned,
+                    "since_ms": int(self._poisoned_at * 1000.0),
+                }
+            if self._lane_owner is not None:
+                return {
+                    "state": "busy",
+                    "detail": "legacy" if self._lane_owner == "legacy" else "recoverable",
+                    "since_ms": int(self._lane_since * 1000.0),
+                }
+            return {"state": "idle"}
 
     def _fingerprint(self, skill):
         return hashlib.sha256(_utf8(skill)).hexdigest()
@@ -201,16 +425,16 @@ class RecoverableRequestManager(object):
     def try_begin_legacy(self):
         with self._lock:
             if self._poisoned:
-                return False, "IPC lane is poisoned: %s" % self._poisoned
+                return False, self._poisoned_message_locked()
             if self._lane_owner is not None:
                 return False, "IPC lane is busy"
-            self._lane_owner = "legacy"
+            self._take_lane_locked("legacy")
             return True, None
 
     def finish_legacy(self, poison_diagnostic=None):
         with self._lock:
-            if poison_diagnostic and not self._poisoned:
-                self._poisoned = poison_diagnostic
+            if poison_diagnostic:
+                self._poison_locked(poison_diagnostic)
             if self._lane_owner == "legacy":
                 self._lane_owner = None
 
@@ -241,8 +465,7 @@ class RecoverableRequestManager(object):
                 )
             if self._poisoned:
                 return self._remember_terminal_locked(
-                    request_id, fingerprint, "rejected",
-                    "IPC lane is poisoned: %s" % self._poisoned,
+                    request_id, fingerprint, "rejected", self._poisoned_message_locked(),
                 )
             if self._lane_owner is not None:
                 return self._remember_terminal_locked(
@@ -264,7 +487,7 @@ class RecoverableRequestManager(object):
                 "finished_at": None,
             }
             self._entries[request_id] = entry
-            self._lane_owner = request_id
+            self._take_lane_locked(request_id)
             try:
                 worker = self._thread_factory(
                     target=self._run_request,
@@ -325,10 +548,35 @@ class RecoverableRequestManager(object):
             entry["diagnostic"] = diagnostic
             entry["finished_at"] = self._clock()
             self._cached_bytes += response_size
-            if poison and not self._poisoned:
-                self._poisoned = poison
+            if poison:
+                self._poison_locked(poison)
             if self._lane_owner == request_id:
                 self._lane_owner = None
+            self._finished.notify_all()
+
+    def wait(self, request_id, seconds):
+        """Wait up to *seconds* (capped) for a running request to finish.
+
+        Lets a submit reply carry the result of a quick request instead of
+        "running", which saves the client a receipt round trip. Returns the
+        receipt either way; a request still running stays queryable.
+        """
+        try:
+            seconds = float(seconds)
+        except (TypeError, ValueError):
+            seconds = 0.0
+        seconds = max(0.0, min(seconds, MAX_SUBMIT_WAIT_SECONDS))
+        deadline = time.time() + seconds
+        with self._lock:
+            while True:
+                entry = self._entries.get(request_id)
+                if entry is None or entry["state"] != "running":
+                    break
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                self._finished.wait(remaining)
+        return self.receipt(request_id)
 
     def receipt(self, request_id):
         with self._lock:

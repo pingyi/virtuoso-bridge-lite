@@ -8,6 +8,11 @@ from typing import Any, Callable, Literal, TYPE_CHECKING
 
 from virtuoso_bridge.virtuoso.layout.editor import LayoutEditor
 from virtuoso_bridge.virtuoso.layout.reader import parse_layout_geometry_output
+from virtuoso_bridge.virtuoso.layout.groups import (
+    layout_create_fig_group, layout_create_group, layout_add_to_group,
+    layout_remove_from_group, layout_transform_fig_group, layout_ungroup,
+    layout_read_groups, parse_layout_groups_output,
+)
 from virtuoso_bridge.virtuoso.layout.ops import (
     layout_bind_current_or_open_cell_view,
     close_current_cellview,
@@ -49,6 +54,10 @@ from virtuoso_bridge.virtuoso.layout.xstream import (
     parse_xstream_log,
     xstream_export_gds_skill,
 )
+from virtuoso_bridge.virtuoso.layout.bbox import (
+    layout_diagnose_bbox, layout_recompute_bbox,
+    parse_layout_bbox_output, parse_layout_bbox_recompute_output,
+)
 
 if TYPE_CHECKING:
     from virtuoso_bridge import VirtuosoClient
@@ -66,9 +75,12 @@ class LayoutOps:
         cell: str,
         view: str = "layout",
         timeout: int = 60,
+        keep_open: bool = False,
     ) -> LayoutEditor:
         """Create a layout editor, replacing an existing view if present."""
-        return LayoutEditor(self._owner, lib, cell, view=view, mode="w", timeout=timeout)
+        return LayoutEditor(
+            self._owner, lib, cell, view=view, mode="w", timeout=timeout, keep_open=keep_open,
+        )
 
     def modify(
         self,
@@ -76,9 +88,12 @@ class LayoutOps:
         cell: str,
         view: str = "layout",
         timeout: int = 60,
+        keep_open: bool = False,
     ) -> LayoutEditor:
         """Open a layout editor in append mode without clearing its view."""
-        return LayoutEditor(self._owner, lib, cell, view=view, mode="a", timeout=timeout)
+        return LayoutEditor(
+            self._owner, lib, cell, view=view, mode="a", timeout=timeout, keep_open=keep_open,
+        )
 
     def edit(
         self,
@@ -87,6 +102,7 @@ class LayoutOps:
         view: str = "layout",
         mode: Literal["a", "w"] = "a",
         timeout: int = 60,
+        keep_open: bool = False,
     ) -> LayoutEditor:
         """Deprecated compatibility wrapper for :meth:`create` / :meth:`modify`."""
         warnings.warn(
@@ -94,7 +110,9 @@ class LayoutOps:
             DeprecationWarning,
             stacklevel=2,
         )
-        return LayoutEditor(self._owner, lib, cell, view=view, mode=mode, timeout=timeout)
+        return LayoutEditor(
+            self._owner, lib, cell, view=view, mode=mode, timeout=timeout, keep_open=keep_open,
+        )
 
     def export_gds(
         self,
@@ -131,6 +149,9 @@ class LayoutOps:
 
 
 __all__ = [
+    "layout_create_fig_group", "layout_create_group", "layout_add_to_group",
+    "layout_remove_from_group", "layout_transform_fig_group", "layout_ungroup",
+    "layout_read_groups", "parse_layout_groups_output",
     "LayoutOps",
     "LayoutEditor",
     "XStreamExportRequest",
@@ -169,4 +190,6 @@ __all__ = [
     "layout_find_via_def",
     "layout_create_via_by_name",
     "layout_via_def_expr_from_name",
+    "layout_diagnose_bbox", "layout_recompute_bbox",
+    "parse_layout_bbox_output", "parse_layout_bbox_recompute_output",
 ]

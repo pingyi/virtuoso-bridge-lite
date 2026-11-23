@@ -15,6 +15,8 @@ from virtuoso_bridge.virtuoso.schematic.ops import (
     schematic_create_pin,
     schematic_create_pin_at_instance_term,
     schematic_create_wire_between_instance_terms,
+    schematic_wire_instance_terms_labeled,
+    pin_anchored_label_placement,
     schematic_create_net_stub,
     schematic_label_instance_term,
     schematic_label_instance_term_offset,
@@ -105,13 +107,16 @@ class SchematicOps:
         cell: str,
         view: str = "schematic",
         timeout: int = 60,
+        keep_open: bool = False,
     ) -> SchematicEditor:
         """Create a schematic editor, replacing an existing view if present.
 
         This is intentionally destructive: Cadence mode ``"w"`` recreates
         the target cellview. Use :meth:`modify` for an existing schematic.
         """
-        return SchematicEditor(self._owner, lib, cell, view=view, mode="w", timeout=timeout)
+        return SchematicEditor(
+            self._owner, lib, cell, view=view, mode="w", timeout=timeout, keep_open=keep_open,
+        )
 
     def modify(
         self,
@@ -119,9 +124,12 @@ class SchematicOps:
         cell: str,
         view: str = "schematic",
         timeout: int = 60,
+        keep_open: bool = False,
     ) -> SchematicEditor:
         """Open a schematic editor in append mode without clearing its view."""
-        return SchematicEditor(self._owner, lib, cell, view=view, mode="a", timeout=timeout)
+        return SchematicEditor(
+            self._owner, lib, cell, view=view, mode="a", timeout=timeout, keep_open=keep_open,
+        )
 
     def edit(
         self,
@@ -130,6 +138,7 @@ class SchematicOps:
         view: str = "schematic",
         mode: Literal["a", "w"] = "a",
         timeout: int = 60,
+        keep_open: bool = False,
     ) -> SchematicEditor:
         """Deprecated compatibility wrapper for :meth:`create` / :meth:`modify`.
 
@@ -141,7 +150,9 @@ class SchematicOps:
             DeprecationWarning,
             stacklevel=2,
         )
-        return SchematicEditor(self._owner, lib, cell, view=view, mode=mode, timeout=timeout)
+        return SchematicEditor(
+            self._owner, lib, cell, view=view, mode=mode, timeout=timeout, keep_open=keep_open,
+        )
 
     def read(
         self,
@@ -149,6 +160,7 @@ class SchematicOps:
         cell: str | None = None,
         *,
         include_positions: bool = False,
+        include_param_evidence: bool = False,
         param_filters: str | Path | None | _UseReaderDefault = _USE_READER_DEFAULT,
         timeout: int = 300,
     ) -> dict[str, Any]:
@@ -156,7 +168,10 @@ class SchematicOps:
 
         This is the client-bound form of the legacy :func:`read_schematic`
         function and preserves its default CDF parameter filtering. Passing
-        ``param_filters=None`` returns all CDF parameters.
+        ``param_filters=None`` disables parameter-name filtering; compact
+        value limits still apply.
+        ``include_param_evidence=True`` also returns unfiltered explicit
+        instance properties and CDF values separately, without evaluating them.
         """
         from virtuoso_bridge.virtuoso.schematic.reader import read_schematic
 
@@ -166,6 +181,8 @@ class SchematicOps:
         }
         if not isinstance(param_filters, _UseReaderDefault):
             kwargs["param_filters"] = param_filters
+        if include_param_evidence:
+            kwargs["include_param_evidence"] = True
         return read_schematic(self._owner, lib, cell, **kwargs)
 
     def plan(
@@ -263,14 +280,18 @@ class SchematicOps:
         view: str = "schematic",
         simulator: str = "spectre",
         recreate_all: bool = True,
+        run_dir: str | Path | None = None,
         timeout: int = 120,
     ) -> SchematicNetlistExportResult:
         """Export a schematic netlist package through Virtuoso's netlister.
 
-        The returned dictionary includes the Virtuoso-side ``source_file`` and
-        ``source_dir``, the local ``output_dir`` and ``input_file``, plus the raw
-        SKILL and download results. Existing ``output_dir`` contents are kept
-        until the new package has downloaded and ``input.scs`` is present.
+        The returned dictionary includes the Virtuoso-side ``source_file``,
+        ``source_dir`` and ``run_dir``, the local ``output_dir`` and
+        ``input_file``, plus the raw SKILL and download results. Existing
+        ``output_dir`` contents are kept until the new package has downloaded
+        and ``input.scs`` is present. Without ``run_dir`` the netlister works
+        in a private ``/tmp`` directory that is removed afterwards, not in the
+        user's ADE project directory; see :func:`export_schematic_netlist`.
         """
         return export_schematic_netlist(
             self._owner,
@@ -280,6 +301,7 @@ class SchematicOps:
             view=view,
             simulator=simulator,
             recreate_all=recreate_all,
+            run_dir=run_dir,
             timeout=timeout,
         )
 
@@ -335,6 +357,8 @@ __all__ = [
     "schematic_create_pin",
     "schematic_create_pin_at_instance_term",
     "schematic_create_wire_between_instance_terms",
+    "schematic_wire_instance_terms_labeled",
+    "pin_anchored_label_placement",
     "schematic_create_net_stub",
     "schematic_check",
     "CheckSaveStatus",
