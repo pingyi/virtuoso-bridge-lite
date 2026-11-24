@@ -54,3 +54,20 @@ following symlinks, and publication/cleanup stay anchored to open descriptors.
 Unsafe pre-existing paths are rejected without changing their permissions.
 CIW birth/ownership checks run on the GUI host, independently of daemon and
 deployment host roles. Offline tests isolate both current and historical state.
+
+# GUI fallback for form-only settings
+
+`virtuoso-bridge gui windows|shot|pin|click|type|key` (and
+`virtuoso_bridge.virtuoso.x11_gui.X11Gui`) drive one named window over X11
+with xdotool when a setting has no API path to the netlist. Coordinates are
+window-relative and refused outside the window; a title must match exactly one
+window. See `skills/virtuoso/references/gui-fallback.md`.
+
+# Maestro result reads on IC23.1
+
+`maestro.read_results` parses the Detail CSV that IC23.1 writes with one
+column per corner (points now carry `corner`), exports every test instead of
+the setup's first one, and opens histories in the given session when it picks
+the latest. `maestro.check_points` finds point logs under the ADE project
+directory or the path recorded in the history's `.rdb`, and raises when it
+finds none instead of returning `[]`.
